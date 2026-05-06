@@ -1,6 +1,15 @@
+from __future__ import annotations
+
+from copy import deepcopy
 from datetime import date, datetime
+
 import requests
 from langchain_core.tools import tool
+
+from app.services.cache import get_cache, make_cache_key, normalize_float, set_cache
+
+
+WEATHER_CACHE_TTL_SECONDS = 3 * 60 * 60
 
 
 def _safe_max(values, default=None):
@@ -16,13 +25,18 @@ def _safe_min(values, default=None):
 def _select_next_weekend_indexes(dates: list[str]) -> list[int]:
     """
     从未来预报中选择最近的周六、周日。
-    Python weekday: 周一=0, 周六=5, 周日=6。
+
+    Python weekday:
+    - 周一 = 0
+    - 周六 = 5
+    - 周日 = 6
     """
     today = date.today()
     indexes = []
 
     for i, d in enumerate(dates):
         current = datetime.strptime(d, "%Y-%m-%d").date()
+
         if current >= today and current.weekday() in (5, 6):
             indexes.append(i)
 
@@ -30,12 +44,44 @@ def _select_next_weekend_indexes(dates: list[str]) -> list[int]:
 
 
 @tool
-def get_weather_forecast(latitude: float, longitude: float, forecast_days: int = 7) -> dict:
+def get_weather_forecast(
+    latitude: float,
+    longitude: float,
+    forecast_days: int = 7,
+) -> dict:
     """
     根据经纬度查询未来天气。
+
     返回最近周末的天气摘要，字段包括：
-    最高温、最低温、最大降水概率、最大风速、最大紫外线指数、天气代码。
+    - 最高温
+    - 最低温
+    - 最大降水概率
+    - 最大风速
+    - 最大紫外线指数
+    - 天气代码
     """
+    today_text = date.today().isoformat()
+
+    cache_key = make_cache_key(
+        "weather",
+        normalize_float(latitude),
+        normalize_float(longitude),
+        forecast_days,
+        today_text,
+    )
+
+    cached = get_cache(cache_key)
+
+    if isinstance(cached, dict):
+        cached_result = deepcopy(cached)
+        cached_result["cache"] = {
+            "enabled": True,
+            "hit": True,
+            "key": cache_key,
+            "ttl_seconds": WEATHER_CACHE_TTL_SECONDS,
+        }
+        return cached_result
+
     url = "https://api.open-meteo.com/v1/forecast"
 
     params = {
@@ -56,10 +102,14 @@ def get_weather_forecast(latitude: float, longitude: float, forecast_days: int =
     }
 
     try:
-        resp = requests.get(url, params=params, timeout=15)
+        resp = requests.get(
+            url,
+            params=params,
+            timeout=15,
+        )
         resp.raise_for_status()
-        data = resp.json()
 
+        data = resp.json()
         daily = data.get("daily", {})
         dates = daily.get("time", [])
 
@@ -67,20 +117,43 @@ def get_weather_forecast(latitude: float, longitude: float, forecast_days: int =
             return {
                 "ok": False,
                 "error": "天气接口没有返回 daily 预报数据",
+                "cache": {
+                    "enabled": True,
+                    "hit": False,
+                    "key": cache_key,
+                    "ttl_seconds": WEATHER_CACHE_TTL_SECONDS,
+                },
             }
 
         weekend_indexes = _select_next_weekend_indexes(dates)
-
         selected_dates = [dates[i] for i in weekend_indexes]
 
-        temp_max_list = [daily.get("temperature_2m_max", [None])[i] for i in weekend_indexes]
-        temp_min_list = [daily.get("temperature_2m_min", [None])[i] for i in weekend_indexes]
-        rain_list = [daily.get("precipitation_probability_max", [None])[i] for i in weekend_indexes]
-        wind_list = [daily.get("wind_speed_10m_max", [None])[i] for i in weekend_indexes]
-        uv_list = [daily.get("uv_index_max", [None])[i] for i in weekend_indexes]
-        weather_code_list = [daily.get("weather_code", [None])[i] for i in weekend_indexes]
+        temp_max_list = [
+            daily.get("temperature_2m_max", [None])[i]
+            for i in weekend_indexes
+        ]
+        temp_min_list = [
+            daily.get("temperature_2m_min", [None])[i]
+            for i in weekend_indexes
+        ]
+        rain_list = [
+            daily.get("precipitation_probability_max", [None])[i]
+            for i in weekend_indexes
+        ]
+        wind_list = [
+            daily.get("wind_speed_10m_max", [None])[i]
+            for i in weekend_indexes
+        ]
+        uv_list = [
+            daily.get("uv_index_max", [None])[i]
+            for i in weekend_indexes
+        ]
+        weather_code_list = [
+            daily.get("weather_code", [None])[i]
+            for i in weekend_indexes
+        ]
 
-        return {
+        result = {
             "ok": True,
             "latitude": latitude,
             "longitude": longitude,
@@ -95,10 +168,30 @@ def get_weather_forecast(latitude: float, longitude: float, forecast_days: int =
                 "weather_codes": weather_code_list,
             },
             "source": "open-meteo",
+            "cache": {
+                "enabled": True,
+                "hit": False,
+                "key": cache_key,
+                "ttl_seconds": WEATHER_CACHE_TTL_SECONDS,
+            },
         }
+
+        set_cache(
+            cache_key,
+            result,
+            ttl_seconds=WEATHER_CACHE_TTL_SECONDS,
+        )
+
+        return result
 
     except Exception as e:
         return {
             "ok": False,
             "error": f"天气查询失败：{str(e)}",
+            "cache": {
+                "enabled": True,
+                "hit": False,
+                "key": cache_key,
+                "ttl_seconds": WEATHER_CACHE_TTL_SECONDS,
+            },
         }

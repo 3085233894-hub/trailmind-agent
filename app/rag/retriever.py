@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import os
 from functools import lru_cache
 from pathlib import Path
@@ -7,6 +8,8 @@ from typing import Any
 
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
+
+from app.services.cache import get_cache, make_cache_key, set_cache
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -17,6 +20,8 @@ EMBEDDING_MODEL = os.getenv(
     "RAG_EMBEDDING_MODEL",
     "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
 )
+
+RAG_CACHE_TTL_SECONDS = 30 * 24 * 60 * 60
 
 
 @lru_cache(maxsize=1)
@@ -72,6 +77,7 @@ def build_safety_query(
     query_parts.extend(main_risks)
 
     risk_level = risk_report.get("risk_level")
+
     if risk_level:
         query_parts.append(f"风险等级 {risk_level}")
 
@@ -128,6 +134,26 @@ def retrieve_safety_knowledge_by_risk(
         selected_trail=selected_trail,
     )
 
+    cache_key = make_cache_key(
+        "rag",
+        query,
+        k,
+        EMBEDDING_MODEL,
+        COLLECTION_NAME,
+    )
+
+    cached = get_cache(cache_key)
+
+    if isinstance(cached, dict):
+        cached_result = deepcopy(cached)
+        cached_result["cache"] = {
+            "enabled": True,
+            "hit": True,
+            "key": cache_key,
+            "ttl_seconds": RAG_CACHE_TTL_SECONDS,
+        }
+        return cached_result
+
     try:
         vectorstore = get_vectorstore()
         docs = vectorstore.similarity_search(query=query, k=k)
@@ -152,6 +178,7 @@ def retrieve_safety_knowledge_by_risk(
 
         for item in items:
             key = item.get("source")
+
             if key and key not in seen:
                 seen.add(key)
                 sources.append(
@@ -162,13 +189,27 @@ def retrieve_safety_knowledge_by_risk(
                     }
                 )
 
-        return {
+        result = {
             "ok": True,
             "query": query,
             "knowledge": knowledge,
             "sources": sources,
             "items": items,
+            "cache": {
+                "enabled": True,
+                "hit": False,
+                "key": cache_key,
+                "ttl_seconds": RAG_CACHE_TTL_SECONDS,
+            },
         }
+
+        set_cache(
+            cache_key,
+            result,
+            ttl_seconds=RAG_CACHE_TTL_SECONDS,
+        )
+
+        return result
 
     except Exception as e:
         return {
@@ -178,4 +219,10 @@ def retrieve_safety_knowledge_by_risk(
             "sources": [],
             "items": [],
             "error": str(e),
+            "cache": {
+                "enabled": True,
+                "hit": False,
+                "key": cache_key,
+                "ttl_seconds": RAG_CACHE_TTL_SECONDS,
+            },
         }

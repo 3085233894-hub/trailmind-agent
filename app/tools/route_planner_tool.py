@@ -1,15 +1,17 @@
 from __future__ import annotations
 
-import math
-from typing import Any
+from copy import deepcopy
 
 import requests
 from langchain_core.tools import tool
 
 from app.config import ORS_API_KEY
+from app.services.cache import get_cache, make_cache_key, normalize_float, set_cache
 
 
 ORS_DIRECTIONS_ENDPOINT = "https://api.openrouteservice.org/v2/directions/{profile}/geojson"
+
+ORS_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
 
 
 def _difficulty_from_distance(distance_km: float | None) -> str:
@@ -33,6 +35,7 @@ def _score_route(
 ) -> float:
     """
     分数越低越好。
+
     综合考虑：
     1. 距离是否接近目标距离
     2. 耗时是否超过用户限制
@@ -58,6 +61,7 @@ def _estimate_target_distance_km(
 ) -> float:
     """
     根据用户时长估计目标路线距离。
+
     新手徒步粗略按 3 km/h，避免生成过长路线。
     """
     if user_level in ["新手", "初学者", "beginner", "没经验"]:
@@ -84,8 +88,8 @@ def _ors_post_round_trip(
     调用 ORS round_trip Directions API。
 
     注意：
-    ORS 坐标顺序是 [longitude, latitude]。
-    Folium 地图使用 [latitude, longitude]。
+    - ORS 坐标顺序是 [longitude, latitude]
+    - Folium 地图使用 [latitude, longitude]
     """
     if not ORS_API_KEY:
         return {
@@ -123,8 +127,8 @@ def _ors_post_round_trip(
             headers=headers,
             timeout=45,
         )
-
         resp.raise_for_status()
+
         return {
             "ok": True,
             "data": resp.json(),
@@ -179,7 +183,6 @@ def _parse_ors_geojson_route(
     properties = feature.get("properties", {}) or {}
     summary = properties.get("summary", {}) or {}
     geometry_obj = feature.get("geometry", {}) or {}
-
     coordinates = geometry_obj.get("coordinates", []) or []
 
     if not coordinates:
@@ -277,7 +280,6 @@ def plan_round_trip_routes(
     - geometry
     - score
     """
-
     warnings: list[str] = []
 
     if route_count <= 0:
@@ -298,6 +300,7 @@ def plan_round_trip_routes(
 
     # 如果用户偏好“山景/徒步/登山”，优先使用 foot-hiking
     pref_text = preference or ""
+
     if any(word in pref_text for word in ["山", "山景", "徒步", "登山", "hiking"]):
         profile = "foot-hiking"
 
@@ -305,6 +308,30 @@ def plan_round_trip_routes(
         max_duration_hours=max_duration_hours,
         user_level=user_level,
     )
+
+    cache_key = make_cache_key(
+        "ors",
+        normalize_float(latitude),
+        normalize_float(longitude),
+        place_name,
+        user_level,
+        max_duration_hours,
+        preference,
+        profile,
+        route_count,
+    )
+
+    cached = get_cache(cache_key)
+
+    if isinstance(cached, dict):
+        cached_result = deepcopy(cached)
+        cached_result["cache"] = {
+            "enabled": True,
+            "hit": True,
+            "key": cache_key,
+            "ttl_seconds": ORS_CACHE_TTL_SECONDS,
+        }
+        return cached_result
 
     # ORS round_trip 的 length 是偏好值，不保证严格等于最终路线长度
     warnings.append(
@@ -363,9 +390,15 @@ def plan_round_trip_routes(
             "errors": errors,
             "source": "openrouteservice",
             "error": "未能生成可用 ORS 环线，请检查 ORS_API_KEY、网络连接或更换地点。",
+            "cache": {
+                "enabled": True,
+                "hit": False,
+                "key": cache_key,
+                "ttl_seconds": ORS_CACHE_TTL_SECONDS,
+            },
         }
 
-    return {
+    final_result = {
         "ok": True,
         "query_mode": "ors_round_trip",
         "place_name": place_name,
@@ -379,4 +412,18 @@ def plan_round_trip_routes(
         "warnings": warnings,
         "errors": errors,
         "source": "openrouteservice",
+        "cache": {
+            "enabled": True,
+            "hit": False,
+            "key": cache_key,
+            "ttl_seconds": ORS_CACHE_TTL_SECONDS,
+        },
     }
+
+    set_cache(
+        cache_key,
+        final_result,
+        ttl_seconds=ORS_CACHE_TTL_SECONDS,
+    )
+
+    return final_result
