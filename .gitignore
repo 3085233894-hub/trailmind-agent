@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Env files / secrets
+.env
+.env.*
+!.env.example
+
+# Streamlit cache
+.streamlit/secrets.toml
+
+# Chroma / vector database
+storage/chroma_safety/
+chroma/
+chroma_db/
+*.sqlite3
+*.db
+
+# Model cache
+.cache/
+models/
+sentence-transformers/
+huggingface/
+.huggingface/
+
+# Logs
+*.log
+logs/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# Generated files
+outputs/
+tmp/
+temp/
+
+# Large data / screenshots / demo videos
+*.mp4
+*.mov
+*.avi
+*.gif
+demo_screenshots/

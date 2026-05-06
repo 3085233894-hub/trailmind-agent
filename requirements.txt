@@ -1,0 +1,14 @@
+langchain
+langchain-core
+langchain-anthropic
+langgraph
+python-dotenv
+requests
+streamlit
+folium
+streamlit-folium
+chromadb
+langchain-chroma
+langchain-huggingface
+langchain-text-splitters
+sentence-transformers
