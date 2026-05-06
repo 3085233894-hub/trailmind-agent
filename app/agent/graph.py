@@ -6,20 +6,21 @@ from typing import Any, Literal
 
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
-from langgraph.graph import StateGraph, START, END
+from langgraph.graph import END, START, StateGraph
 
-from app.agent.state import HikingAgentState
 from app.agent.prompts import (
-    INTENT_PARSE_PROMPT,
     FINAL_PLAN_PROMPT,
+    INTENT_PARSE_PROMPT,
     OUTPUT_VALIDATE_PROMPT,
 )
+from app.agent.state import HikingAgentState
 from app.config import API_KEY, MODEL, get_anthropic_api_url
+from app.rag.retriever import retrieve_safety_knowledge_by_risk
 from app.tools.geocode_tool import geocode_place
+from app.tools.risk_tool import assess_hiking_risk
 from app.tools.route_planner_tool import plan_round_trip_routes
 from app.tools.weather_tool import get_weather_forecast
-from app.tools.risk_tool import assess_hiking_risk
-from app.rag.retriever import retrieve_safety_knowledge_by_risk
+
 
 def normalize_content(content) -> str:
     """
@@ -32,13 +33,16 @@ def normalize_content(content) -> str:
 
     if isinstance(content, list):
         texts = []
+
         for block in content:
             if isinstance(block, dict):
                 text = block.get("text")
+
                 if text:
                     texts.append(text)
             else:
                 texts.append(str(block))
+
         return "\n".join(texts).strip()
 
     return str(content)
@@ -56,6 +60,7 @@ def build_llm():
     }
 
     api_url = get_anthropic_api_url()
+
     if api_url:
         llm_kwargs["anthropic_api_url"] = api_url
 
@@ -68,6 +73,7 @@ llm = build_llm()
 def _extract_json(text: str) -> dict:
     """
     从 LLM 输出中提取 JSON。
+
     兼容：
     - 纯 JSON
     - ```json ... ```
@@ -79,6 +85,7 @@ def _extract_json(text: str) -> dict:
     text = text.strip()
 
     fenced = re.search(r"```json\s*(.*?)\s*```", text, re.DOTALL)
+
     if fenced:
         text = fenced.group(1).strip()
 
@@ -88,6 +95,7 @@ def _extract_json(text: str) -> dict:
         pass
 
     obj = re.search(r"\{.*\}", text, re.DOTALL)
+
     if obj:
         try:
             return json.loads(obj.group(0))
@@ -107,7 +115,7 @@ def _fallback_parse_intent(user_query: str) -> dict:
     - 避免用户输入其他地点时仍然规划到西湖
     """
     query = user_query.strip()
-    compact_query = query.replace(" ", "").replace("　", "")
+    compact_query = query.replace(" ", "").replace("\u3000", "")
 
     location_text = None
 
@@ -134,6 +142,7 @@ def _fallback_parse_intent(user_query: str) -> dict:
 
         for pattern in patterns:
             match = re.search(pattern, query)
+
             if match:
                 candidate = match.group(1).strip()
                 candidate = candidate.replace("我周末想", "").replace("我想", "").strip()
@@ -143,6 +152,7 @@ def _fallback_parse_intent(user_query: str) -> dict:
                     break
 
     date_text = None
+
     if "周末" in query:
         date_text = "周末"
     elif "明天" in query:
@@ -151,6 +161,7 @@ def _fallback_parse_intent(user_query: str) -> dict:
         date_text = "今天"
 
     user_level = None
+
     if any(word in query for word in ["新手", "初学者", "没经验", "小白"]):
         user_level = "新手"
     elif any(word in query for word in ["有经验", "老手", "进阶"]):
@@ -158,6 +169,7 @@ def _fallback_parse_intent(user_query: str) -> dict:
 
     duration_limit_hours = None
     duration_match = re.search(r"(\d+(?:\.\d+)?)\s*小时", query)
+
     if duration_match:
         duration_limit_hours = float(duration_match.group(1))
 
@@ -211,10 +223,51 @@ def _append_trace(
             preview = json.dumps(output, ensure_ascii=False)[:1200]
         else:
             preview = str(output)[:1200]
+
         item["output_preview"] = preview
 
     trace.append(item)
+
     return trace
+
+
+def _trail_recommend_score(trail: dict) -> float:
+    """
+    获取路线推荐分数。
+
+    优先级：
+    1. recommend_score：新版推荐分数，越高越好
+    2. route_cost：新版路线成本，越低越好，转换成推荐分数
+    3. score：旧字段，兼容历史版本
+    """
+    if not trail:
+        return 0.0
+
+    recommend_score = trail.get("recommend_score")
+
+    if recommend_score is not None:
+        try:
+            return float(recommend_score)
+        except Exception:
+            pass
+
+    route_cost = trail.get("route_cost")
+
+    if route_cost is not None:
+        try:
+            return max(0.0, 100.0 - float(route_cost) * 10.0)
+        except Exception:
+            pass
+
+    old_score = trail.get("score")
+
+    if old_score is not None:
+        try:
+            return float(old_score)
+        except Exception:
+            pass
+
+    return 0.0
 
 
 def _select_best_trail(
@@ -223,15 +276,18 @@ def _select_best_trail(
 ) -> dict | None:
     """
     选择候选路线：
-    1. 优先选择预计耗时不超过限制的最高分路线
-    2. 如果都超过限制，选择距离最短路线
-    3. 如果距离也没有，选择第一条
+
+    1. 优先选择预计耗时不超过限制的路线
+    2. 在未超时路线中，选择 recommend_score 最高的路线
+    3. 如果都超过限制，选择距离最短路线
+    4. 如果距离也没有，选择第一条
     """
     if not trails:
         return None
 
     valid_duration = [
-        trail for trail in trails
+        trail
+        for trail in trails
         if trail.get("estimated_duration_hours") is not None
         and trail.get("estimated_duration_hours") <= duration_limit_hours
     ]
@@ -239,12 +295,13 @@ def _select_best_trail(
     if valid_duration:
         return sorted(
             valid_duration,
-            key=lambda t: t.get("score", 0),
+            key=_trail_recommend_score,
             reverse=True,
         )[0]
 
     with_distance = [
-        trail for trail in trails
+        trail
+        for trail in trails
         if trail.get("distance_km") is not None
     ]
 
@@ -303,7 +360,6 @@ def parse_user_intent(state: HikingAgentState) -> dict:
                 HumanMessage(content=user_query),
             ]
         )
-
         content = normalize_content(msg.content)
         parsed = _extract_json(content)
 
@@ -314,6 +370,7 @@ def parse_user_intent(state: HikingAgentState) -> dict:
         parsed = _fallback_parse_intent(user_query)
         errors = list(state.get("errors", []))
         errors.append(f"parse_user_intent LLM 解析失败，已使用规则兜底：{str(e)}")
+
         return {
             **parsed,
             "errors": errors,
@@ -355,7 +412,6 @@ def parse_user_intent(state: HikingAgentState) -> dict:
             output=parsed_result,
         ),
     }
-
 
 
 def geocode_location(state: HikingAgentState) -> dict:
@@ -413,11 +469,10 @@ def geocode_location(state: HikingAgentState) -> dict:
         ),
     }
 
+
 def search_candidate_trails(state: HikingAgentState) -> dict:
     """
-    阶段 3 改造版：
-    不再使用 Overpass 的短 path/footway 片段作为候选路线，
-    而是使用 OpenRouteService 生成完整 round_trip 环线。
+    使用 OpenRouteService 生成完整 round_trip 环线候选路线。
     """
     latitude = state.get("latitude")
     longitude = state.get("longitude")
@@ -467,7 +522,6 @@ def search_candidate_trails(state: HikingAgentState) -> dict:
     if not result.get("ok"):
         errors.append(result.get("error", "ORS 路线规划失败"))
 
-    # 把 ORS 的 warnings 也放入 errors/trace，方便前端调试
     warnings = result.get("warnings", []) or []
 
     return {
@@ -493,20 +547,8 @@ def search_candidate_trails(state: HikingAgentState) -> dict:
         ),
     }
 
+
 def fetch_weather(state: HikingAgentState) -> dict:
-    """
-    天气查询节点。
-
-    输入：
-    - latitude
-    - longitude
-
-    输出：
-    - weather
-
-    工具：
-    - get_weather_forecast
-    """
     latitude = state.get("latitude")
     longitude = state.get("longitude")
 
@@ -551,11 +593,12 @@ def fetch_weather(state: HikingAgentState) -> dict:
         ),
     }
 
+
 def assess_risk(state: HikingAgentState) -> dict:
     weather = state.get("weather") or {}
     weather_summary = _weather_summary_values(weather)
-    selected_trail = state.get("selected_trail") or {}
 
+    selected_trail = state.get("selected_trail") or {}
     duration_limit_hours = state.get("duration_limit_hours") or 3.0
     user_level = state.get("user_level") or "新手"
 
@@ -588,7 +631,6 @@ def recommend_plan_b(state: HikingAgentState) -> dict:
     risk_report = state.get("risk_report") or {}
     weather = state.get("weather") or {}
     selected_trail = state.get("selected_trail") or {}
-
     weather_summary = _weather_summary_values(weather)
 
     main_reasons = risk_report.get("main_risks", [])
@@ -686,18 +728,6 @@ def _fallback_safety_knowledge_rule(state: HikingAgentState) -> tuple[list[str],
 
 
 def retrieve_safety_knowledge(state: HikingAgentState) -> dict:
-    """
-    Safety RAG 节点。
-
-    输入：
-    - risk_report
-    - weather
-    - selected_trail
-
-    输出：
-    - safety_knowledge
-    - safety_sources
-    """
     risk_report = state.get("risk_report")
     weather = state.get("weather")
     selected_trail = state.get("selected_trail")
@@ -842,28 +872,32 @@ def _fallback_final_answer(payload: dict) -> str:
                 f"- {item.get('source')}（{item.get('risk_type')}）"
                 for item in safety_sources
             ]
-    )
+        )
     else:
         safety_source_text = "- 暂无可用来源"
-    
-    selected_dates = weather.get("selected_dates", []) if weather else []
 
+    selected_dates = weather.get("selected_dates", []) if weather else []
     gear = risk.get("gear_advice", [])
     main_risks = risk.get("main_risks", [])
 
     answer = f"""
 ## 地点识别
+
 - 识别地点：{location.get("location_name")}
 - 经纬度：{location.get("latitude")}, {location.get("longitude")}
 
 ## 推荐路线
+
 - 路线名称：{selected_trail.get("name", "暂无可用路线")}
 - 路线来源：{selected_trail.get("source_type", "未知")}
 - 预计距离：{selected_trail.get("distance_km", "未知")} km
 - 预计耗时：{selected_trail.get("estimated_duration_hours", "未知")} 小时
 - 难度：{selected_trail.get("difficulty", "未知")}
+- 推荐分数：{selected_trail.get("recommend_score", selected_trail.get("score", "未知"))}
+- 路线成本：{selected_trail.get("route_cost", "未知")}
 
 ## 天气概况
+
 - 查询日期：{", ".join(selected_dates) if selected_dates else "未知"}
 - 最高温：{weather_summary.get("temperature_max_c", "未知")}°C
 - 最低温：{weather_summary.get("temperature_min_c", "未知")}°C
@@ -872,19 +906,24 @@ def _fallback_final_answer(payload: dict) -> str:
 - 紫外线指数：{weather_summary.get("uv_index_max", "未知")}
 
 ## 风险评估
+
 - 风险等级：{risk.get("risk_level", "未知")}
 - 风险分数：{risk.get("risk_score", "未知")}
-- 主要风险：
+
+### 主要风险
+
 {chr(10).join([f"- {item}" for item in main_risks]) if main_risks else "- 暂无明显风险"}
 
 ## 安全建议
+
 {chr(10).join([f"- {item}" for item in safety]) if safety else "- 按基础徒步安全原则执行"}
 
 ## 安全知识来源
-## 安全知识来源
+
 {safety_source_text}
 
 ## 装备建议
+
 {chr(10).join([f"- {item}" for item in gear]) if gear else "- 饮用水、补给、充电宝、离线地图、急救包"}
 
 ## Plan B
@@ -899,6 +938,7 @@ def _fallback_final_answer(payload: dict) -> str:
     answer += f"""
 
 ## 是否推荐出行
+
 - 推荐/不推荐：{"推荐" if risk.get("recommend_go") else "不推荐"}
 - 原因：{risk.get("recommendation", "请结合天气和个人体能谨慎判断")}
 """
@@ -973,6 +1013,7 @@ def validate_output(state: HikingAgentState) -> dict:
 def route_after_risk(state: HikingAgentState) -> Literal["high_risk", "normal"]:
     if _is_high_risk(state):
         return "high_risk"
+
     return "normal"
 
 
@@ -1022,29 +1063,23 @@ graph = build_graph()
 def initial_state(query: str) -> HikingAgentState:
     return {
         "user_query": query,
-
         "location_text": None,
         "date_text": None,
         "user_level": None,
         "duration_limit_hours": None,
         "preference": None,
-
         "location_name": None,
         "latitude": None,
         "longitude": None,
-
         "candidate_trails": [],
         "selected_trail": None,
-
         "weather": None,
         "risk_report": None,
         "plan_b": None,
         "safety_knowledge": [],
         "safety_sources": [],
-
         "final_plan": None,
         "final_answer": None,
-
         "tool_trace": [],
         "errors": [],
     }

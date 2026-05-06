@@ -34,11 +34,11 @@ def _score_route(
     max_duration_hours: float,
 ) -> float:
     """
-    分数越低越好。
+    计算路线成本 route_cost。
 
-    综合考虑：
-    1. 距离是否接近目标距离
-    2. 耗时是否超过用户限制
+    注意：
+    - route_cost 越低越好
+    - 它不是推荐分数，而是“距离目标路线的偏差 + 超时惩罚”
     """
     if distance_km is None:
         distance_penalty = 999
@@ -53,6 +53,29 @@ def _score_route(
         duration_penalty = (duration_hours - max_duration_hours) * 5
 
     return round(distance_penalty + duration_penalty, 3)
+
+
+def _recommend_score_from_cost(route_cost: float | None) -> float:
+    """
+    将 route_cost 转换为 recommend_score。
+
+    route_cost:
+    - 越低越好
+    - 用于路线规划内部排序
+
+    recommend_score:
+    - 越高越好
+    - 用于 Agent 推荐路线和前端展示
+    """
+    if route_cost is None:
+        return 0.0
+
+    try:
+        cost = float(route_cost)
+    except Exception:
+        return 0.0
+
+    return round(max(0.0, 100.0 - cost * 10.0), 3)
 
 
 def _estimate_target_distance_km(
@@ -222,12 +245,14 @@ def _parse_ors_geojson_route(
     except Exception:
         duration_hours = None
 
-    score = _score_route(
+    route_cost = _score_route(
         distance_km=distance_km,
         duration_hours=duration_hours,
         target_distance_km=target_distance_km,
         max_duration_hours=max_duration_hours,
     )
+
+    recommend_score = _recommend_score_from_cost(route_cost)
 
     return {
         "name": f"{place_name} ORS环线-{route_index}",
@@ -239,7 +264,15 @@ def _parse_ors_geojson_route(
         "estimated_duration_hours": duration_hours,
         "difficulty": _difficulty_from_distance(distance_km),
         "target_distance_km": round(target_distance_km, 2),
-        "score": score,
+
+        # 新字段：语义明确
+        "route_cost": route_cost,
+        "recommend_score": recommend_score,
+
+        # 兼容旧版前端和旧测试：暂时保留 score。
+        # 后续前端完全改为展示 recommend_score 后，可以删除 score。
+        "score": recommend_score,
+
         "geometry_points": len(geometry),
         "geometry": geometry,
         "distance_source": "ors_summary",
@@ -278,6 +311,8 @@ def plan_round_trip_routes(
     - estimated_duration_hours
     - difficulty
     - geometry
+    - route_cost
+    - recommend_score
     - score
     """
     warnings: list[str] = []
@@ -370,9 +405,10 @@ def plan_round_trip_routes(
         if route:
             routes.append(route)
 
+    # route_cost 越低越好
     routes = sorted(
         routes,
-        key=lambda item: item.get("score", 999),
+        key=lambda item: item.get("route_cost", 999),
     )
 
     if not routes:
