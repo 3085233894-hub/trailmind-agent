@@ -18,16 +18,11 @@ from app.config import API_KEY, MODEL, get_anthropic_api_url
 from app.rag.retriever import retrieve_safety_knowledge_by_risk
 from app.tools.geocode_tool import geocode_place
 from app.tools.risk_tool import assess_hiking_risk
-from app.tools.route_planner_tool import plan_round_trip_routes
+from app.tools.route_planner_tool import plan_point_to_point_route, plan_round_trip_routes
 from app.tools.weather_tool import get_weather_forecast
 
 
 def normalize_content(content) -> str:
-    """
-    兼容不同模型返回格式：
-    - str
-    - list[dict]，例如 [{"type": "text", "text": "..."}]
-    """
     if isinstance(content, str):
         return content
 
@@ -71,14 +66,6 @@ llm = build_llm()
 
 
 def _extract_json(text: str) -> dict:
-    """
-    从 LLM 输出中提取 JSON。
-
-    兼容：
-    - 纯 JSON
-    - ```json ... ```
-    - 前后带少量说明文字
-    """
     if not text:
         return {}
 
@@ -105,51 +92,169 @@ def _extract_json(text: str) -> dict:
     return {}
 
 
-def _fallback_parse_intent(user_query: str) -> dict:
-    """
-    规则意图解析。
+def _compact_text(text: str) -> str:
+    return text.replace(" ", "").replace("\u3000", "").strip()
 
-    关键原则：
-    - 能识别地点就返回地点
-    - 不能识别地点时，不再默认返回“杭州西湖”
-    - 避免用户输入其他地点时仍然规划到西湖
-    """
-    query = user_query.strip()
-    compact_query = query.replace(" ", "").replace("\u3000", "")
 
-    location_text = None
+def _normalize_place_alias(text: str | None) -> str | None:
+    if not text:
+        return None
 
-    known_places = [
+    compact = _compact_text(text)
+
+    aliases = [
         ("华中科技大学", ["华中科技大学", "华科", "HUST", "hust"]),
         ("武汉大学", ["武汉大学", "武大"]),
-        ("东湖", ["武汉东湖", "东湖"]),
+        ("武汉东湖", ["武汉东湖", "东湖"]),
         ("杭州西湖", ["杭州西湖", "西湖"]),
         ("北京香山", ["北京香山", "香山"]),
-        ("黄山风景区", ["黄山", "黄山风景区"]),
+        ("黄山风景区", ["黄山风景区", "黄山"]),
+        ("清华大学", ["清华大学", "清华"]),
+        ("北京大学", ["北京大学", "北大"]),
+        ("颐和园", ["颐和园"]),
+        ("圆明园", ["圆明园"]),
+        ("奥林匹克森林公园", ["奥林匹克森林公园", "奥森"]),
+        ("鸟巢", ["鸟巢", "国家体育场"]),
+        ("天安门", ["天安门"]),
+        ("故宫", ["故宫", "故宫博物院"]),
     ]
 
-    for standard_name, aliases in known_places:
-        if any(alias in compact_query for alias in aliases):
-            location_text = standard_name
-            break
+    for standard, alias_list in aliases:
+        if any(alias in compact for alias in alias_list):
+            return standard
 
-    # 如果不在 known_places 中，尝试从自然语言中抽取“在 XXX 附近/周边/徒步”
-    if location_text is None:
-        patterns = [
-            r"(?:在|去|到|前往|想在|想去)([^，,。！？\n]+?)(?:附近|周边|徒步|爬山|散步|游玩|走走|$)",
-            r"([^，,。！？\n]{2,30}(?:大学|公园|景区|风景区|森林公园|山|湖|古道|步道))",
+    cleaned = text.strip()
+    cleaned = re.sub(r"^(从|在|到|去|前往|想在|想去)", "", cleaned)
+    cleaned = re.sub(r"(附近|周边|徒步|爬山|散步|游玩|走走|出发|终点|起点)$", "", cleaned)
+    cleaned = cleaned.strip(" ，,。！？\n\t")
+
+    return cleaned or None
+
+
+def _split_waypoints(text: str | None) -> list[str]:
+    if not text:
+        return []
+
+    text = re.split(r"(?:，|,|。|！|!|？|\?)", text)[0]
+    parts = re.split(r"(?:、|,|，|和|及|以及|;|；|\+)", text)
+
+    result = []
+
+    for part in parts:
+        cleaned = _normalize_place_alias(part)
+
+        if cleaned and cleaned not in result:
+            result.append(cleaned)
+
+    return result
+
+
+def _extract_point_to_point_intent(query: str) -> dict | None:
+    """
+    规则提取 A -> B 路线。
+
+    支持：
+    - 从A到B
+    - 从A出发到B
+    - A到B
+    - A前往B
+    - 途经C/经过C/经由C
+    """
+    text = query.strip()
+
+    waypoint_texts: list[str] = []
+    waypoint_match = re.search(r"(?:途经|经过|经由|路过)([^。！？\n]+)", text)
+
+    if waypoint_match:
+        waypoint_texts = _split_waypoints(waypoint_match.group(1))
+
+    patterns = [
+        r"从(.+?)(?:出发)?(?:徒步)?(?:到|去|前往|抵达)(.+?)(?:途经|经过|经由|路过|，|,|。|！|!|？|\?|$)",
+        r"(.+?)(?:徒步)?(?:到|去|前往|抵达)(.+?)(?:途经|经过|经由|路过|，|,|。|！|!|？|\?|$)",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text)
+
+        if not match:
+            continue
+
+        start_raw = match.group(1)
+        end_raw = match.group(2)
+
+        start_text = _normalize_place_alias(start_raw)
+        end_text = _normalize_place_alias(end_raw)
+
+        if not start_text or not end_text:
+            continue
+
+        if start_text == end_text:
+            continue
+
+        if len(start_text) < 2 or len(end_text) < 2:
+            continue
+
+        return {
+            "route_mode": "point_to_point",
+            "location_text": start_text,
+            "start_location_text": start_text,
+            "end_location_text": end_text,
+            "waypoint_texts": waypoint_texts,
+        }
+
+    return None
+
+
+def _fallback_parse_intent(user_query: str) -> dict:
+    query = user_query.strip()
+    compact_query = _compact_text(query)
+
+    point_to_point = _extract_point_to_point_intent(query)
+
+    if point_to_point:
+        route_mode = "point_to_point"
+        location_text = point_to_point["location_text"]
+        start_location_text = point_to_point["start_location_text"]
+        end_location_text = point_to_point["end_location_text"]
+        waypoint_texts = point_to_point["waypoint_texts"]
+    else:
+        route_mode = "round_trip"
+        location_text = None
+        start_location_text = None
+        end_location_text = None
+        waypoint_texts = []
+
+        known_places = [
+            ("华中科技大学", ["华中科技大学", "华科", "HUST", "hust"]),
+            ("武汉大学", ["武汉大学", "武大"]),
+            ("武汉东湖", ["武汉东湖", "东湖"]),
+            ("杭州西湖", ["杭州西湖", "西湖"]),
+            ("北京香山", ["北京香山", "香山"]),
+            ("黄山风景区", ["黄山", "黄山风景区"]),
         ]
 
-        for pattern in patterns:
-            match = re.search(pattern, query)
+        for standard_name, aliases in known_places:
+            if any(alias in compact_query for alias in aliases):
+                location_text = standard_name
+                break
 
-            if match:
-                candidate = match.group(1).strip()
-                candidate = candidate.replace("我周末想", "").replace("我想", "").strip()
+        if location_text is None:
+            patterns = [
+                r"(?:在|去|到|前往|想在|想去)([^，,。！？\n]+?)(?:附近|周边|徒步|爬山|散步|游玩|走走|$)",
+                r"([^，,。！？\n]{2,30}(?:大学|公园|景区|风景区|森林公园|山|湖|古道|步道))",
+            ]
 
-                if len(candidate) >= 2:
-                    location_text = candidate
-                    break
+            for pattern in patterns:
+                match = re.search(pattern, query)
+
+                if match:
+                    candidate = match.group(1).strip()
+                    candidate = candidate.replace("我周末想", "").replace("我想", "").strip()
+                    candidate = _normalize_place_alias(candidate)
+
+                    if candidate and len(candidate) >= 2:
+                        location_text = candidate
+                        break
 
     date_text = None
 
@@ -175,21 +280,22 @@ def _fallback_parse_intent(user_query: str) -> dict:
 
     preferences = []
 
-    for word in ["湖边", "森林", "山景", "亲子", "新手", "轻松", "短线", "校园"]:
+    for word in ["湖边", "森林", "山景", "亲子", "新手", "轻松", "短线", "校园", "途经", "经过"]:
         if word in query:
             preferences.append(word)
-
-    if location_text and "大学" in location_text and "校园" not in preferences:
-        preferences.append("校园")
-
-    if location_text in ["杭州西湖", "东湖"] and "湖边" not in preferences:
-        preferences.append("湖边")
 
     if user_level == "新手" and "新手" not in preferences:
         preferences.append("新手")
 
+    if route_mode == "point_to_point" and "点到点" not in preferences:
+        preferences.append("点到点")
+
     return {
+        "route_mode": route_mode,
         "location_text": location_text,
+        "start_location_text": start_location_text,
+        "end_location_text": end_location_text,
+        "waypoint_texts": waypoint_texts,
         "date_text": date_text or "周末",
         "user_level": user_level or "新手",
         "duration_limit_hours": duration_limit_hours or 3.0,
@@ -232,14 +338,6 @@ def _append_trace(
 
 
 def _trail_recommend_score(trail: dict) -> float:
-    """
-    获取路线推荐分数。
-
-    优先级：
-    1. recommend_score：新版推荐分数，越高越好
-    2. route_cost：新版路线成本，越低越好，转换成推荐分数
-    3. score：旧字段，兼容历史版本
-    """
     if not trail:
         return 0.0
 
@@ -274,14 +372,6 @@ def _select_best_trail(
     trails: list[dict],
     duration_limit_hours: float,
 ) -> dict | None:
-    """
-    选择候选路线：
-
-    1. 优先选择预计耗时不超过限制的路线
-    2. 在未超时路线中，选择 recommend_score 最高的路线
-    3. 如果都超过限制，选择距离最短路线
-    4. 如果距离也没有，选择第一条
-    """
     if not trails:
         return None
 
@@ -346,10 +436,6 @@ def _is_high_risk(state: HikingAgentState) -> bool:
     return False
 
 
-# =========================
-# LangGraph Nodes
-# =========================
-
 def parse_user_intent(state: HikingAgentState) -> dict:
     user_query = state["user_query"]
 
@@ -382,26 +468,45 @@ def parse_user_intent(state: HikingAgentState) -> dict:
             ),
         }
 
-    # 二次兜底，避免字段缺失
     fallback = _fallback_parse_intent(user_query)
 
+    route_mode = parsed.get("route_mode") or fallback["route_mode"]
+
+    start_location_text = parsed.get("start_location_text") or fallback.get("start_location_text")
+    end_location_text = parsed.get("end_location_text") or fallback.get("end_location_text")
+    waypoint_texts = parsed.get("waypoint_texts")
+
+    if waypoint_texts is None:
+        waypoint_texts = fallback.get("waypoint_texts", [])
+
+    if isinstance(waypoint_texts, str):
+        waypoint_texts = _split_waypoints(waypoint_texts)
+
+    if start_location_text and end_location_text:
+        route_mode = "point_to_point"
+
     location_text = parsed.get("location_text") or fallback["location_text"]
-    date_text = parsed.get("date_text") or fallback["date_text"]
-    user_level = parsed.get("user_level") or fallback["user_level"]
-    duration_limit_hours = parsed.get("duration_limit_hours") or fallback["duration_limit_hours"]
-    preference = parsed.get("preference") or fallback["preference"]
+
+    if route_mode == "point_to_point":
+        location_text = start_location_text or location_text
 
     try:
-        duration_limit_hours = float(duration_limit_hours)
+        duration_limit_hours = float(
+            parsed.get("duration_limit_hours") or fallback["duration_limit_hours"]
+        )
     except Exception:
         duration_limit_hours = 3.0
 
     parsed_result = {
+        "route_mode": route_mode,
         "location_text": location_text,
-        "date_text": date_text,
-        "user_level": user_level,
+        "start_location_text": start_location_text,
+        "end_location_text": end_location_text,
+        "waypoint_texts": waypoint_texts or [],
+        "date_text": parsed.get("date_text") or fallback["date_text"],
+        "user_level": parsed.get("user_level") or fallback["user_level"],
         "duration_limit_hours": duration_limit_hours,
-        "preference": preference,
+        "preference": parsed.get("preference") or fallback["preference"],
     }
 
     return {
@@ -414,12 +519,111 @@ def parse_user_intent(state: HikingAgentState) -> dict:
     }
 
 
+def _geocode_one_location(place: str) -> dict:
+    return geocode_place.invoke({"place": place})
+
+
 def geocode_location(state: HikingAgentState) -> dict:
+    route_mode = state.get("route_mode") or "round_trip"
+    errors = list(state.get("errors", []))
+
+    if route_mode == "point_to_point":
+        start_text = state.get("start_location_text")
+        end_text = state.get("end_location_text")
+        waypoint_texts = state.get("waypoint_texts", []) or []
+
+        if not start_text or not end_text:
+            errors.append("点到点路线缺少起点或终点，请使用“从A到B”的格式输入。")
+            return {
+                "errors": errors,
+                "tool_trace": _append_trace(
+                    state,
+                    node="geocode_location",
+                    output="点到点路线缺少起点或终点",
+                    status="error",
+                ),
+            }
+
+        start_result = _geocode_one_location(start_text)
+        end_result = _geocode_one_location(end_text)
+
+        if not start_result.get("ok"):
+            errors.append(f"起点解析失败：{start_result.get('error', start_text)}")
+
+        if not end_result.get("ok"):
+            errors.append(f"终点解析失败：{end_result.get('error', end_text)}")
+
+        waypoint_locations = []
+
+        for waypoint_text in waypoint_texts:
+            waypoint_result = _geocode_one_location(waypoint_text)
+
+            if waypoint_result.get("ok"):
+                waypoint_locations.append(
+                    {
+                        "query": waypoint_text,
+                        "name": waypoint_result.get("name"),
+                        "latitude": waypoint_result.get("latitude"),
+                        "longitude": waypoint_result.get("longitude"),
+                    }
+                )
+            else:
+                errors.append(f"途经点解析失败，已跳过：{waypoint_text}")
+
+        if not start_result.get("ok") or not end_result.get("ok"):
+            return {
+                "errors": errors,
+                "tool_trace": _append_trace(
+                    state,
+                    node="geocode_location",
+                    tool="geocode_place",
+                    tool_input={
+                        "start": start_text,
+                        "end": end_text,
+                        "waypoints": waypoint_texts,
+                    },
+                    output={
+                        "start": start_result,
+                        "end": end_result,
+                        "waypoints": waypoint_locations,
+                    },
+                    status="error",
+                ),
+            }
+
+        return {
+            "start_location_name": start_result.get("name"),
+            "start_latitude": start_result.get("latitude"),
+            "start_longitude": start_result.get("longitude"),
+            "end_location_name": end_result.get("name"),
+            "end_latitude": end_result.get("latitude"),
+            "end_longitude": end_result.get("longitude"),
+            "waypoint_locations": waypoint_locations,
+            "location_name": start_result.get("name"),
+            "latitude": start_result.get("latitude"),
+            "longitude": start_result.get("longitude"),
+            "errors": errors,
+            "tool_trace": _append_trace(
+                state,
+                node="geocode_location",
+                tool="geocode_place",
+                tool_input={
+                    "start": start_text,
+                    "end": end_text,
+                    "waypoints": waypoint_texts,
+                },
+                output={
+                    "start": start_result,
+                    "end": end_result,
+                    "waypoints": waypoint_locations,
+                },
+            ),
+        }
+
     location_text = state.get("location_text")
 
     if not location_text:
-        errors = list(state.get("errors", []))
-        errors.append("未能从用户输入中识别出地点，请输入更明确的地点，例如：华中科技大学、武汉东湖、杭州西湖。")
+        errors.append("未能从用户输入中识别出地点，请输入更明确的地点，例如：华中科技大学、武汉东湖、杭州西湖，或使用“从A到B”的格式。")
 
         return {
             "location_name": None,
@@ -441,7 +645,6 @@ def geocode_location(state: HikingAgentState) -> dict:
     result = geocode_place.invoke(tool_input)
 
     if not result.get("ok"):
-        errors = list(state.get("errors", []))
         errors.append(result.get("error", "地点解析失败"))
 
         return {
@@ -460,6 +663,7 @@ def geocode_location(state: HikingAgentState) -> dict:
         "location_name": result.get("name"),
         "latitude": result.get("latitude"),
         "longitude": result.get("longitude"),
+        "errors": errors,
         "tool_trace": _append_trace(
             state,
             node="geocode_location",
@@ -471,9 +675,79 @@ def geocode_location(state: HikingAgentState) -> dict:
 
 
 def search_candidate_trails(state: HikingAgentState) -> dict:
-    """
-    使用 OpenRouteService 生成完整 round_trip 环线候选路线。
-    """
+    route_mode = state.get("route_mode") or "round_trip"
+    errors = list(state.get("errors", []))
+
+    if route_mode == "point_to_point":
+        start_latitude = state.get("start_latitude")
+        start_longitude = state.get("start_longitude")
+        end_latitude = state.get("end_latitude")
+        end_longitude = state.get("end_longitude")
+
+        if (
+            start_latitude is None
+            or start_longitude is None
+            or end_latitude is None
+            or end_longitude is None
+        ):
+            errors.append("缺少起点或终点经纬度，无法规划 A 到 B 路线。")
+            return {
+                "candidate_trails": [],
+                "selected_trail": None,
+                "errors": errors,
+                "tool_trace": _append_trace(
+                    state,
+                    node="search_candidate_trails",
+                    output="缺少起点或终点经纬度，跳过 A-B 路线规划",
+                    status="error",
+                ),
+            }
+
+        tool_input = {
+            "start_latitude": start_latitude,
+            "start_longitude": start_longitude,
+            "end_latitude": end_latitude,
+            "end_longitude": end_longitude,
+            "start_name": state.get("start_location_text") or state.get("start_location_name") or "起点",
+            "end_name": state.get("end_location_text") or state.get("end_location_name") or "终点",
+            "waypoint_locations": state.get("waypoint_locations", []) or [],
+            "user_level": state.get("user_level") or "新手",
+            "max_duration_hours": state.get("duration_limit_hours") or 3.0,
+            "preference": state.get("preference") or "",
+            "profile": "foot-walking",
+        }
+
+        result = plan_point_to_point_route.invoke(tool_input)
+
+        trails = result.get("trails", []) if result.get("ok") else []
+        selected_trail = result.get("trail") if result.get("ok") else None
+
+        if not result.get("ok"):
+            errors.append(result.get("error", "A-B 路线规划失败"))
+
+        return {
+            "candidate_trails": trails,
+            "selected_trail": selected_trail,
+            "errors": errors,
+            "tool_trace": _append_trace(
+                state,
+                node="search_candidate_trails",
+                tool="plan_point_to_point_route",
+                tool_input=tool_input,
+                output={
+                    "ok": result.get("ok"),
+                    "query_mode": result.get("query_mode"),
+                    "source": result.get("source"),
+                    "profile": result.get("profile"),
+                    "count": result.get("count"),
+                    "selected_trail": selected_trail,
+                    "warnings": result.get("warnings", []),
+                    "errors": result.get("errors", []),
+                },
+                status="success" if result.get("ok") else "error",
+            ),
+        }
+
     latitude = state.get("latitude")
     longitude = state.get("longitude")
     location_name = state.get("location_name") or state.get("location_text") or "附近"
@@ -482,7 +756,6 @@ def search_candidate_trails(state: HikingAgentState) -> dict:
     user_level = state.get("user_level") or "新手"
 
     if latitude is None or longitude is None:
-        errors = list(state.get("errors", []))
         errors.append("缺少经纬度，无法规划 ORS 路线")
 
         return {
@@ -516,8 +789,6 @@ def search_candidate_trails(state: HikingAgentState) -> dict:
         trails=trails,
         duration_limit_hours=duration_limit_hours,
     )
-
-    errors = list(state.get("errors", []))
 
     if not result.get("ok"):
         errors.append(result.get("error", "ORS 路线规划失败"))
@@ -608,7 +879,7 @@ def assess_risk(state: HikingAgentState) -> dict:
         "wind_speed_max_kmh": weather_summary.get("wind_speed_max_kmh", 0),
         "uv_index_max": weather_summary.get("uv_index_max", 0),
         "user_level": user_level,
-        "duration_hours": duration_limit_hours,
+        "duration_hours": selected_trail.get("estimated_duration_hours") or duration_limit_hours,
         "distance_km": selected_trail.get("distance_km"),
         "elevation_gain_m": 100,
     }
@@ -673,9 +944,6 @@ def recommend_plan_b(state: HikingAgentState) -> dict:
 
 
 def _fallback_safety_knowledge_rule(state: HikingAgentState) -> tuple[list[str], list[dict]]:
-    """
-    RAG 不可用时的规则兜底。
-    """
     risk_report = state.get("risk_report") or {}
     weather = state.get("weather") or {}
     selected_trail = state.get("selected_trail") or {}
@@ -797,8 +1065,12 @@ def retrieve_safety_knowledge(state: HikingAgentState) -> dict:
 def generate_final_plan(state: HikingAgentState) -> dict:
     payload = {
         "user_query": state.get("user_query"),
+        "route_mode": state.get("route_mode"),
         "intent": {
             "location_text": state.get("location_text"),
+            "start_location_text": state.get("start_location_text"),
+            "end_location_text": state.get("end_location_text"),
+            "waypoint_texts": state.get("waypoint_texts", []),
             "date_text": state.get("date_text"),
             "user_level": state.get("user_level"),
             "duration_limit_hours": state.get("duration_limit_hours"),
@@ -808,6 +1080,15 @@ def generate_final_plan(state: HikingAgentState) -> dict:
             "location_name": state.get("location_name"),
             "latitude": state.get("latitude"),
             "longitude": state.get("longitude"),
+        },
+        "point_to_point": {
+            "start_location_name": state.get("start_location_name"),
+            "start_latitude": state.get("start_latitude"),
+            "start_longitude": state.get("start_longitude"),
+            "end_location_name": state.get("end_location_name"),
+            "end_latitude": state.get("end_latitude"),
+            "end_longitude": state.get("end_longitude"),
+            "waypoint_locations": state.get("waypoint_locations", []),
         },
         "selected_trail": state.get("selected_trail"),
         "candidate_trails_count": len(state.get("candidate_trails", [])),
@@ -857,7 +1138,9 @@ def generate_final_plan(state: HikingAgentState) -> dict:
 
 
 def _fallback_final_answer(payload: dict) -> str:
+    route_mode = payload.get("route_mode")
     location = payload.get("location", {})
+    point_to_point = payload.get("point_to_point", {})
     selected_trail = payload.get("selected_trail") or {}
     weather = payload.get("weather") or {}
     weather_summary = weather.get("weekend_summary", {}) if weather else {}
@@ -880,11 +1163,24 @@ def _fallback_final_answer(payload: dict) -> str:
     gear = risk.get("gear_advice", [])
     main_risks = risk.get("main_risks", [])
 
+    if route_mode == "point_to_point":
+        location_block = f"""
+- 路线模式：A 到 B 点到点路线
+- 起点：{point_to_point.get("start_location_name")}
+- 终点：{point_to_point.get("end_location_name")}
+- 途经点：{", ".join([item.get("name", "") for item in point_to_point.get("waypoint_locations", [])]) or "无"}
+"""
+    else:
+        location_block = f"""
+- 路线模式：地点附近环线规划
+- 识别地点：{location.get("location_name")}
+- 经纬度：{location.get("latitude")}, {location.get("longitude")}
+"""
+
     answer = f"""
 ## 地点识别
 
-- 识别地点：{location.get("location_name")}
-- 经纬度：{location.get("latitude")}, {location.get("longitude")}
+{location_block}
 
 ## 推荐路线
 
@@ -933,7 +1229,7 @@ def _fallback_final_answer(payload: dict) -> str:
         alternatives = plan_b.get("alternatives", [])
         answer += "\n".join([f"- {item}" for item in alternatives])
     else:
-        answer += "- 当前风险未触发强制 Plan B，可按推荐路线短线执行。"
+        answer += "- 当前风险未触发强制 Plan B，可按推荐路线执行。"
 
     answer += f"""
 
@@ -1006,20 +1302,12 @@ def validate_output(state: HikingAgentState) -> dict:
     }
 
 
-# =========================
-# Conditional Routing
-# =========================
-
 def route_after_risk(state: HikingAgentState) -> Literal["high_risk", "normal"]:
     if _is_high_risk(state):
         return "high_risk"
 
     return "normal"
 
-
-# =========================
-# Build Graph
-# =========================
 
 def build_graph():
     workflow = StateGraph(HikingAgentState)
@@ -1063,11 +1351,22 @@ graph = build_graph()
 def initial_state(query: str) -> HikingAgentState:
     return {
         "user_query": query,
+        "route_mode": None,
         "location_text": None,
         "date_text": None,
         "user_level": None,
         "duration_limit_hours": None,
         "preference": None,
+        "start_location_text": None,
+        "end_location_text": None,
+        "waypoint_texts": [],
+        "start_location_name": None,
+        "start_latitude": None,
+        "start_longitude": None,
+        "end_location_name": None,
+        "end_latitude": None,
+        "end_longitude": None,
+        "waypoint_locations": [],
         "location_name": None,
         "latitude": None,
         "longitude": None,
@@ -1106,5 +1405,4 @@ def run_graph(query: str) -> dict:
     }
 
 
-# 为了兼容你现有 Streamlit 代码，也提供 run_agent 别名
 run_agent = run_graph

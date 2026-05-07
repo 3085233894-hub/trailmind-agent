@@ -165,9 +165,6 @@ def _get_map_center(
     candidate_trails: list[dict],
     default_center: list[float] | None = None,
 ) -> list[float]:
-    """
-    优先使用第一条有 geometry 的路线作为地图中心。
-    """
     for trail in candidate_trails:
         geometry = _normalize_geometry(trail.get("geometry", []))
 
@@ -256,7 +253,7 @@ class TrailSwitchControl(MacroElement):
 
                     mapObj.fitBounds(bounds, {
                         padding: [36, 36],
-                        maxZoom: 17
+                        maxZoom: 16
                     });
                 }
 
@@ -265,6 +262,7 @@ class TrailSwitchControl(MacroElement):
 
                     for (let i = 0; i < boundsList.length; i++) {
                         const bounds = boundsList[i] || [];
+
                         for (let j = 0; j < bounds.length; j++) {
                             allBounds.push(bounds[j]);
                         }
@@ -438,6 +436,21 @@ class TrailSwitchControl(MacroElement):
         )
 
 
+def _add_stable_base_tile(m: folium.Map) -> None:
+    """
+    只使用一个稳定底图。
+
+    不再同时加载 CartoDB positron / dark_matter，避免 Streamlit iframe 中出现
+    黑色底图、灰色空块、不同底图叠加错位的问题。
+    """
+    folium.TileLayer(
+        tiles="OpenStreetMap",
+        name="OpenStreetMap",
+        control=False,
+        show=True,
+    ).add_to(m)
+
+
 def render_trail_map(
     candidate_trails: list[dict],
     selected_trail: dict | None = None,
@@ -448,6 +461,7 @@ def render_trail_map(
     在 Streamlit 中渲染候选路线地图。
 
     设计：
+    - 只加载一个底图，避免黑块/灰块叠层
     - 推荐路线默认高亮并默认显示
     - 起点绿色，终点红色
     - Popup 展示距离、耗时、难度、推荐分数和轨迹点数
@@ -476,24 +490,17 @@ def render_trail_map(
 
     center = _get_map_center(drawable_trails, default_center)
 
+    # 关键修改：
+    # tiles=None，避免 folium 默认底图 + 手动底图叠加。
     m = folium.Map(
         location=center,
         zoom_start=14,
-        tiles="OpenStreetMap",
+        tiles=None,
         control_scale=True,
+        prefer_canvas=True,
     )
 
-    folium.TileLayer(
-        tiles="CartoDB positron",
-        name="浅色地图",
-        control=True,
-    ).add_to(m)
-
-    folium.TileLayer(
-        tiles="CartoDB dark_matter",
-        name="深色地图",
-        control=True,
-    ).add_to(m)
+    _add_stable_base_tile(m)
 
     layer_names: list[str] = []
     trail_labels: list[str] = []
@@ -536,7 +543,7 @@ def render_trail_map(
             locations=geometry,
             color=color,
             weight=7 if is_selected else 5,
-            opacity=0.95 if is_selected else 0.75,
+            opacity=0.95 if is_selected else 0.78,
             tooltip=tooltip,
             popup=folium.Popup(
                 _trail_popup_html(
@@ -598,8 +605,7 @@ def render_trail_map(
             selected_index=selected_index,
         ).add_to(m)
 
-    folium.LayerControl(position="bottomleft").add_to(m)
-
+    # 不再添加 LayerControl，避免用户误切换到加载失败的底图。
     st_folium(
         m,
         height=height,
