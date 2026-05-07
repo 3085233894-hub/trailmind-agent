@@ -1,70 +1,153 @@
 # TrailMind：基于 LangGraph 的户外徒步规划与风险评估 Agent
 
-TrailMind 是一个面向户外徒步场景的智能规划 Agent。系统能够根据用户的自然语言需求，自动完成徒步意图解析、地点定位、候选路线生成、天气查询、风险评估、安全建议检索、Plan B 推荐，并通过 Streamlit + Folium 前端展示路线地图、候选轨迹、风险等级、装备建议和 LangGraph 工作流轨迹。
+TrailMind 是一个面向户外徒步场景的智能规划 Agent。系统将用户的自然语言徒步需求拆解为地点解析、路线规划、天气查询、风险评估、RAG 安全知识检索、Plan B 生成和地图可视化等步骤，用于展示 Agent 工作流编排、外部工具调用、结构化风险评估和工程化交付能力。
 
-当前版本已经从简单的 `create_agent` 工具调用 Demo 升级为 **LangGraph 可控工作流**：工具调用顺序由图结构控制，LLM 主要负责意图解析和最终自然语言生成，路线规划、天气查询、风险评分和高风险分支由代码确定性执行。
-
----
-
-## 1. 项目亮点
-
-- **LangGraph 工作流编排**：将徒步规划拆解为意图解析、地点解析、路线规划、天气查询、风险评估、安全知识检索、Plan B 和输出校验等节点。
-- **多工具调用**：集成地点解析、OpenRouteService 路线规划、Open-Meteo 天气查询、规则风险评估等工具。
-- **完整路线生成**：使用 OpenRouteService `round_trip` 生成完整环线，避免直接使用 Overpass API 时返回大量短小道路片段的问题。
-- **确定性风险评分**：综合降水概率、风速、气温、紫外线、路线距离、用户水平等因素输出风险等级和装备建议。
-- **高风险条件分支**：当降雨、强风、高温或风险等级触发阈值时，自动进入 Plan B 节点。
-- **地图可视化**：使用 Folium + Streamlit-Folium 展示候选路线轨迹，并支持地图内按钮切换不同候选轨迹。
-- **工具调用可观测**：前端展示 LangGraph 每个节点的输入、输出和执行状态，便于调试和项目展示。
+当前项目已经从早期的 `create_agent` 工具调用 Demo 升级为 **LangGraph 可控工作流 + FastAPI 后端 + Streamlit 前端** 的完整工程雏形。LLM 主要负责意图解析和最终自然语言生成，地点解析、路线规划、天气查询、风险评分、RAG 检索和 Plan B 分支由代码节点确定性执行。
 
 ---
 
-## 2. 功能概览
+## 1. 项目定位
+
+```text
+TrailMind = 自然语言徒步需求
+          + LangGraph Agent 工作流
+          + OpenRouteService 路线规划
+          + Open-Meteo 天气查询
+          + 可解释风险评分
+          + Chroma RAG 安全知识库
+          + Streamlit/Folium 地图展示
+          + FastAPI 服务封装
+```
+
+适合作为求职项目展示：
+
+- Agent 工作流编排能力
+- 多工具调用与状态管理能力
+- 后端 API 封装能力
+- 前端可视化展示能力
+- RAG 知识增强能力
+- 测试、缓存、部署等工程化意识
+
+---
+
+## 2. 当前实现状态
+
+### 已实现
+
+- [x] LangGraph 多节点 Agent 工作流
+- [x] 用户自然语言意图解析
+- [x] Nominatim + 本地别名地点解析
+- [x] OpenRouteService 候选徒步路线规划
+- [x] Open-Meteo 天气查询
+- [x] 确定性风险评分模型
+- [x] 高风险 Plan B 生成
+- [x] Chroma + Markdown 安全知识库检索
+- [x] SQLite 缓存系统
+- [x] FastAPI 后端接口
+- [x] Streamlit 前端页面
+- [x] Folium/Leaflet 地图可视化
+- [x] 候选路线切换展示
+- [x] 安全知识来源展示
+- [x] LangGraph 工具调用轨迹展示
+- [x] GPX/KML 上传轨迹分析
+- [x] 当前推荐路线 GPX 下载
+- [x] pytest 基础测试目录
+
+### 当前仍需完善
+
+- [ ] Dockerfile / docker-compose.yml 一键启动
+- [ ] GitHub Actions 自动测试
+- [ ] Demo 截图与示例输出
+- [ ] 更真实的海拔 / 爬升风险建模
+- [ ] 第三方 API mock 测试
+- [ ] 更完整的部署说明
+- [ ] 前端展示进一步产品化
+
+---
+
+## 3. 功能概览
 
 用户输入示例：
 
 ```text
-我周末想在杭州西湖附近徒步，新手，3小时以内，帮我判断是否适合。
+我周末想在武汉东湖附近徒步，新手，4小时以内，帮我判断是否合适。
 ```
 
 系统输出包括：
 
-- 识别地点和经纬度
-- 生成候选徒步环线
-- 地图展示候选轨迹
-- 查询未来周末天气
-- 输出风险等级和风险分数
-- 给出主要风险原因
-- 给出装备建议
+- 识别用户徒步意图：地点、日期、用户水平、时长限制、路线偏好
+- 解析地点经纬度
+- 生成候选徒步路线
+- 查询未来天气
+- 输出风险等级、风险分数和主要风险原因
+- 给出装备建议和行动建议
 - 高风险时生成 Plan B
-- 展示完整 LangGraph 工作流轨迹
+- 检索相关安全知识并展示来源
+- 在地图中展示候选路线轨迹
+- 展示 LangGraph 工作流执行轨迹
+- 支持上传 GPX/KML 轨迹进行风险分析
+- 支持将推荐路线导出为 GPX
 
 ---
 
-## 3. 技术栈
+## 4. 技术栈
 
 | 模块 | 技术 |
 |---|---|
 | Agent 工作流 | LangGraph |
 | LLM 接入 | LangChain + ChatAnthropic 兼容接口 |
-| 默认模型 | MiniMax-M2.7，可通过 `.env` 配置 |
-| 地点解析 | Nominatim + 内置地点别名兜底 |
-| 路线规划 | OpenRouteService Directions API / round_trip |
-| 天气查询 | Open-Meteo Forecast API |
-| 风险评估 | Python 规则模型 |
+| 后端服务 | FastAPI |
 | 前端 | Streamlit |
-| 地图展示 | Folium + streamlit-folium |
-| HTTP 请求 | requests |
+| 地图 | Folium / Leaflet / streamlit-folium |
+| 地点解析 | Nominatim + 本地别名兜底 |
+| 路线规划 | OpenRouteService |
+| 天气查询 | Open-Meteo |
+| 风险评估 | Python 规则评分模型 |
+| RAG | Chroma + Markdown 知识库 |
+| Embedding | HuggingFaceEmbeddings / sentence-transformers |
+| 缓存 | SQLite |
+| 轨迹文件 | GPX / KML |
+| 测试 | pytest |
 | 配置管理 | python-dotenv |
 
 ---
 
-## 4. 系统架构
+## 5. 系统架构
+
+```mermaid
+flowchart TD
+    U[User] --> FE[Streamlit Frontend]
+    FE --> API[FastAPI Backend]
+    API --> G[LangGraph Agent]
+
+    G --> GEO[Geocode Tool]
+    G --> ROUTE[OpenRouteService Route Planner]
+    G --> WEATHER[Open-Meteo Weather Tool]
+    G --> RISK[Risk Scoring Tool]
+    G --> RAG[Chroma Safety RAG]
+    G --> PLANB[Plan B Generator]
+
+    GEO --> CACHE[SQLite Cache]
+    ROUTE --> CACHE
+    WEATHER --> CACHE
+    RAG --> CACHE
+
+    API --> TRACK[GPX/KML Track Analyzer]
+    TRACK --> RISK
+
+    G --> API
+    API --> FE
+```
+
+---
+
+## 6. LangGraph 工作流
 
 ```mermaid
 flowchart TD
     A[User Query] --> B[parse_user_intent]
     B --> C[geocode_location]
-    C --> D[search_candidate_trails]
+    C --> D[plan_route]
     D --> E[fetch_weather]
     E --> F[assess_risk]
     F --> G{High Risk?}
@@ -80,502 +163,550 @@ flowchart TD
 
 | 节点 | 作用 |
 |---|---|
-| `parse_user_intent` | 从用户自然语言中提取地点、日期、体能水平、时长限制和偏好 |
+| `parse_user_intent` | 从自然语言中提取地点、日期、用户水平、时长限制和偏好 |
 | `geocode_location` | 将地点文本解析为经纬度 |
-| `search_candidate_trails` | 使用 OpenRouteService 生成候选徒步环线 |
-| `fetch_weather` | 查询未来天气数据 |
-| `assess_risk` | 根据天气、路线和用户水平进行风险评分 |
+| `plan_route` | 规划候选徒步路线 |
+| `fetch_weather` | 查询天气数据 |
+| `assess_risk` | 根据天气、路线和用户水平计算风险 |
 | `recommend_plan_b` | 高风险时生成替代方案 |
-| `retrieve_safety_knowledge` | 根据风险类型检索安全建议，目前为轻量规则检索 |
-| `generate_final_plan` | 基于结构化状态生成最终 Markdown 回答 |
-| `validate_output` | 校验最终回答是否包含必要章节 |
+| `retrieve_safety_knowledge` | 从 Chroma 安全知识库检索相关建议 |
+| `generate_final_plan` | 生成最终 Markdown 规划结果 |
+| `validate_output` | 校验输出是否包含必要章节 |
 
 ---
 
-## 5. 当前项目结构
+## 7. 项目结构
 
 ```text
 trailmind-agent/
-├── requirements.txt
-├── run_cli.py
-├── .env
-│
 ├── app/
-│   ├── __init__.py
-│   ├── config.py
+│   ├── main.py                     # FastAPI 后端入口
+│   ├── config.py                   # 环境变量与模型配置
 │   │
 │   ├── agent/
-│   │   ├── __init__.py
-│   │   ├── state.py              # LangGraph 全局状态定义
-│   │   ├── prompts.py            # 意图解析、最终生成、输出校验提示词
-│   │   ├── graph.py              # LangGraph 工作流主入口
-│   │   └── trail_agent.py        # 旧版 create_agent 实现，可作为历史版本保留
+│   │   ├── graph.py                # LangGraph 工作流主入口
+│   │   ├── prompts.py              # 意图解析、最终生成、校验提示词
+│   │   └── state.py                # HikingAgentState 状态定义
+│   │
+│   ├── rag/
+│   │   ├── build_index.py          # Chroma 索引构建
+│   │   ├── retriever.py            # 安全知识检索
+│   │   └── docs/                   # Markdown 安全知识文档
+│   │
+│   ├── schemas/
+│   │   ├── request.py              # FastAPI 请求模型
+│   │   └── response.py             # FastAPI 响应模型
+│   │
+│   ├── services/
+│   │   └── cache.py                # SQLite 缓存
 │   │
 │   └── tools/
-│       ├── __init__.py
-│       ├── geocode_tool.py       # 地点解析工具
-│       ├── weather_tool.py       # Open-Meteo 天气查询工具
-│       ├── risk_tool.py          # 徒步风险评估工具
-│       ├── trail_search_tool.py  # Overpass 路线检索工具，当前作为备用/历史版本
-│       └── route_planner_tool.py # OpenRouteService 环线路线规划工具
+│       ├── geocode_tool.py         # 地点解析
+│       ├── route_planner_tool.py   # ORS 路线规划
+│       ├── weather_tool.py         # Open-Meteo 天气查询
+│       ├── risk_tool.py            # 风险评分
+│       └── gpx_tool.py             # GPX/KML 解析与 GPX 导出
 │
-└── frontend/
-    ├── streamlit_app.py          # Streamlit 前端页面
-    └── components/
-        ├── __init__.py
-        └── map_view.py           # Folium 地图与候选轨迹切换控件
+├── frontend/
+│   ├── streamlit_app.py            # Streamlit 前端
+│   └── components/
+│       └── map_view.py             # Folium 地图组件
+│
+├── tests/                          # pytest 测试
+├── scripts/                        # 辅助脚本
+├── run_cli.py                      # CLI 入口
+├── requirements.txt                # Python 依赖
+├── pytest.ini                      # pytest 配置
+├── .env.example                    # 环境变量示例
+├── .gitignore
+└── README.md
 ```
-
-> 注意：实际提交 GitHub 时不应提交 `.env`、`.venv/`、`__pycache__/` 等文件。建议新增 `.gitignore` 和 `.env.example`。
 
 ---
 
-## 6. 环境准备
+## 8. 环境准备
 
-### 6.1 Python 版本
-
-推荐使用 Python 3.11。
+推荐 Python 版本：
 
 ```bash
 python3.11 --version
 ```
 
-### 6.2 创建虚拟环境
+创建虚拟环境：
 
 ```bash
 cd trailmind-agent
+
 python3.11 -m venv .venv
 source .venv/bin/activate
+
 pip install -U pip
-pip install -U -r requirements.txt
+pip install -r requirements.txt
 ```
+
+如果当前 `requirements.txt` 尚未包含 FastAPI / 测试相关依赖，可以先手动补装：
+
+```bash
+pip install fastapi uvicorn python-multipart pytest
+```
+
+建议后续将这些依赖同步写入 `requirements.txt`。
 
 ---
 
-## 7. 配置环境变量
+## 9. 环境变量配置
 
-在项目根目录创建 `.env`：
+复制示例文件：
 
 ```bash
-API_KEY=你的大模型APIKey
-BASE_URL=你的大模型BaseURL
+cp .env.example .env
+```
+
+`.env.example` 示例：
+
+```env
+# LLM config
+API_KEY=your_llm_api_key
+BASE_URL=https://your-base-url/api/v1
 MODEL=MiniMax-M2.7
-ORS_API_KEY=你的OpenRouteService_API_Key
+
+# OpenRouteService
+ORS_API_KEY=your_openrouteservice_api_key
+
+# RAG embedding model
+RAG_EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
 ```
 
 字段说明：
 
 | 变量 | 说明 |
 |---|---|
-| `API_KEY` | LLM 网关或模型服务的 API Key |
-| `BASE_URL` | LLM 兼容接口地址，代码中会将 `/api/v1` 转换为 Anthropic 兼容 `/api` |
-| `MODEL` | 模型名称，默认 `MiniMax-M2.7` |
-| `ORS_API_KEY` | OpenRouteService API Key，用于生成候选徒步环线 |
+| `API_KEY` | LLM 网关或模型服务 API Key |
+| `BASE_URL` | LLM 兼容接口 Base URL |
+| `MODEL` | 模型名称 |
+| `ORS_API_KEY` | OpenRouteService API Key，用于路线规划 |
+| `RAG_EMBEDDING_MODEL` | RAG embedding 模型 |
 
-建议创建 `.env.example`：
-
-```bash
-API_KEY=your_llm_api_key
-BASE_URL=https://your-base-url/api/v1
-MODEL=MiniMax-M2.7
-ORS_API_KEY=your_openrouteservice_api_key
-```
+注意：不要提交 `.env`、真实 API Key、缓存数据库或 Chroma 索引目录。
 
 ---
 
-## 8. 运行方式
+## 10. 构建 RAG 安全知识索引
 
-### 8.1 命令行运行
+项目使用 `app/rag/docs/` 下的 Markdown 文档构建 Chroma 安全知识库。
+
+构建索引：
 
 ```bash
-source .venv/bin/activate
+python -m app.rag.build_index
+```
+
+索引默认写入：
+
+```text
+storage/chroma_safety/
+```
+
+该目录是运行时生成物，不建议提交到 GitHub。
+
+---
+
+## 11. CLI 运行
+
+直接运行默认示例：
+
+```bash
 python run_cli.py
 ```
 
-也可以传入自定义问题：
+传入自定义问题：
 
 ```bash
-python run_cli.py "我周末想在杭州西湖附近徒步，新手，3小时以内，帮我判断是否适合。"
+python run_cli.py "我周末想在武汉东湖附近徒步，新手，4小时以内，帮我判断是否合适。"
 ```
 
-CLI 会输出：
-
-- LangGraph Agent 最终回答
-- 选中路线
-- 风险报告
-- Plan B
-- 工作流轨迹
-- 错误或兜底信息
-
-### 8.2 Streamlit 前端运行
+建议固定验收输入：
 
 ```bash
-source .venv/bin/activate
+python run_cli.py "我周末想在杭州西湖附近徒步，新手，3小时以内，帮我判断是否合适。"
+
+python run_cli.py "我周末想在武汉东湖附近徒步，新手，4小时以内，帮我判断是否合适。"
+
+python run_cli.py "我周末想在华中科技大学附近徒步，新手，3小时以内，帮我判断是否合适。"
+
+python run_cli.py "我周末想在北京香山附近徒步，有经验，4小时以内，帮我判断是否合适。"
+```
+
+---
+
+## 12. FastAPI 后端运行
+
+启动后端：
+
+```bash
+python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+健康检查：
+
+```bash
+curl http://127.0.0.1:8000/api/health
+```
+
+自然语言规划接口：
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/plan \
+  -H "Content-Type: application/json" \
+  -d '{"query":"我周末想在武汉东湖附近徒步，新手，4小时以内，帮我判断是否合适。"}'
+```
+
+上传 GPX/KML 轨迹分析接口：
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/track/analyze \
+  -F "file=@examples/sample_uploaded_track.gpx" \
+  -F "user_level=新手"
+```
+
+---
+
+## 13. Streamlit 前端运行
+
+先启动 FastAPI 后端：
+
+```bash
+python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+再启动前端：
+
+```bash
 streamlit run frontend/streamlit_app.py
 ```
 
-前端页面包含：
+默认前端会调用：
 
-- 徒步需求输入框
-- 规划摘要卡片
-- Agent 最终输出
-- 候选路线地图
+```text
+http://127.0.0.1:8000
+```
+
+如需修改后端地址：
+
+```bash
+export TRAILMIND_API_BASE_URL=http://127.0.0.1:8000
+streamlit run frontend/streamlit_app.py
+```
+
+前端能力：
+
+- 自然语言徒步规划
+- FastAPI 后端连通性检查
+- 候选路线地图展示
 - 推荐路线详情
-- 候选路线列表
-- 风险评估、天气、Plan B、安全知识 tabs
-- LangGraph 工作流轨迹
-- 完整 State 调试信息
+- 风险评估报告
+- 天气摘要
+- Plan B 展示
+- RAG 安全知识来源展示
+- LangGraph 工作流轨迹展示
+- GPX/KML 上传轨迹分析
+- 当前推荐路线 GPX 下载
 
 ---
 
-## 9. 路线规划设计
+## 14. 测试
 
-早期版本直接使用 OpenStreetMap / Overpass API 查询：
-
-```text
-relation["route"="hiking"]
-way["highway"="path"]
-way["highway"="footway"]
-way["highway"="track"]
-```
-
-但在城市景区中，这种方式容易返回大量短小道路片段，不能形成完整徒步路线。因此当前版本升级为 OpenRouteService `round_trip` 路线生成方案。
-
-路线生成流程：
-
-```text
-用户最大时长 + 用户水平
-        ↓
-估算目标距离，例如新手 3 km/h
-        ↓
-调用 OpenRouteService round_trip
-        ↓
-使用不同 seed 生成多条候选环线
-        ↓
-解析 distance、duration、GeoJSON geometry
-        ↓
-按距离接近目标值和是否超时进行排序
-        ↓
-选出推荐路线
-```
-
-例如用户输入“新手，3小时以内”：
-
-```text
-目标距离 = 3 小时 × 3 km/h = 9 km
-```
-
-系统会基于该目标距离生成多条候选环线，并返回：
-
-- `distance_km`
-- `estimated_duration_hours`
-- `difficulty`
-- `geometry`
-- `score`
-- `source_type = ors_round_trip`
-
-> 当前 ORS 生成的是“基于路网的规划路线”，不是两步路、AllTrails 或 Wikiloc 这类平台上的人工精选轨迹。最终回答中会显式说明这一点。
-
----
-
-## 10. 风险评估模型
-
-风险评估工具位于：
-
-```text
-app/tools/risk_tool.py
-```
-
-输入包括：
-
-- 最高温度
-- 降水概率
-- 最大风速
-- 紫外线指数
-- 用户水平
-- 预计时长
-- 路线距离
-- 估算爬升
-
-输出包括：
-
-```json
-{
-  "risk_level": "高风险",
-  "risk_score": 68,
-  "main_risks": [
-    "降水概率较高，路面湿滑风险明显",
-    "紫外线较强，需要防晒"
-  ],
-  "recommendation": "不推荐按原计划出行，建议改期或选择城市公园、景区短线。",
-  "recommend_go": false,
-  "gear_advice": ["雨衣", "防水袋", "登山杖"]
-}
-```
-
-高风险触发条件包括：
-
-- `risk_level == 高风险`
-- 降水概率大于等于 70%
-- 最大风速大于等于 35 km/h
-- 最高气温大于等于 35℃
-
-触发后，LangGraph 会进入 `recommend_plan_b` 节点。
-
----
-
-## 11. 地图展示
-
-地图组件位于：
-
-```text
-frontend/components/map_view.py
-```
-
-实现能力：
-
-- 使用 Folium 渲染路线地图
-- 使用 `PolyLine` 绘制候选路线轨迹
-- 起点和终点使用 `CircleMarker` 标记
-- 在地图右上角注入自定义候选轨迹按钮
-- 点击按钮只显示对应候选路线
-- 点击“显示全部”展示全部候选路线
-- 地图自动缩放到当前路线范围
-
-候选路线 geometry 格式：
-
-```python
-[
-    [30.2467, 120.1485],
-    [30.2471, 120.1490],
-    ...
-]
-```
-
----
-
-## 12. 主要文件说明
-
-### `app/agent/graph.py`
-
-LangGraph 主工作流定义文件，负责：
-
-- 初始化 LLM
-- 定义节点函数
-- 定义高风险条件分支
-- 编译 StateGraph
-- 提供 `run_graph(query)` 入口
-
-### `app/agent/state.py`
-
-定义 `HikingAgentState`，用于保存从用户输入到最终输出的所有中间状态。
-
-### `app/agent/prompts.py`
-
-包含：
-
-- `INTENT_PARSE_PROMPT`
-- `FINAL_PLAN_PROMPT`
-- `OUTPUT_VALIDATE_PROMPT`
-
-### `app/tools/geocode_tool.py`
-
-地点解析工具。当前包含部分地点别名兜底，例如：
-
-- 杭州西湖
-- 浙江杭州西湖
-- 北京香山
-
-用于避免 Nominatim 对中文地点产生歧义匹配。
-
-### `app/tools/route_planner_tool.py`
-
-OpenRouteService 路线规划工具。核心函数：
-
-```python
-plan_round_trip_routes(...)
-```
-
-用于基于起点生成多条候选环线。
-
-### `app/tools/weather_tool.py`
-
-Open-Meteo 天气查询工具，返回未来周末天气摘要。
-
-### `app/tools/risk_tool.py`
-
-确定性风险评分工具，用规则模型输出风险等级、风险分数、装备建议和是否推荐出行。
-
-### `frontend/streamlit_app.py`
-
-Streamlit 前端入口。
-
-### `frontend/components/map_view.py`
-
-Folium 地图组件和候选路线切换控件。
-
----
-
-## 13. 示例输出结构
-
-最终回答会包含以下章节：
-
-```markdown
-## 地点识别
-
-## 推荐路线
-
-## 天气概况
-
-## 风险评估
-
-## 安全建议
-
-## 装备建议
-
-## Plan B
-
-## 是否推荐出行
-```
-
----
-
-## 14. 常见问题与排查
-
-### 14.1 `ORS_API_KEY 未配置`
-
-检查 `.env`：
+运行全部测试：
 
 ```bash
-cat .env
+pytest -q
 ```
 
-确认包含：
+当前测试目录包括：
+
+```text
+tests/
+├── conftest.py
+├── test_cache.py
+├── test_geocode.py
+├── test_gpx_tool.py
+├── test_graph_flow.py
+├── test_rag.py
+├── test_risk.py
+└── test_route_planner.py
+```
+
+建议测试分层：
+
+```text
+unit tests:
+- 地点解析规则
+- 风险评分
+- GPX/KML 解析
+- SQLite 缓存
+- response schema
+
+integration tests:
+- OpenRouteService 真实调用
+- Open-Meteo 真实调用
+- Chroma RAG 索引与检索
+- LLM 最终计划生成
+```
+
+涉及真实 API Key 的测试不应放入默认 CI；建议使用 mock 或手动 integration 测试。
+
+---
+
+## 15. Docker 运行说明
+
+当前阶段建议补充以下文件：
+
+```text
+Dockerfile
+docker-compose.yml
+.dockerignore
+```
+
+目标运行方式：
 
 ```bash
-ORS_API_KEY=你的OpenRouteService_API_Key
+docker compose up --build
 ```
 
-### 14.2 `NameError: fetch_weather is not defined`
+目标服务：
 
-说明 `app/agent/graph.py` 中缺少 `fetch_weather()` 节点函数，或该函数缩进错误。确认文件中存在顶格定义：
-
-```python
-def fetch_weather(state: HikingAgentState) -> dict:
-    ...
+```text
+api       -> FastAPI 后端，端口 8000
+frontend  -> Streamlit 前端，端口 8501
 ```
 
-### 14.3 地图没有轨迹
+计划中的访问地址：
 
-检查候选路线是否包含 geometry：
-
-```bash
-python - <<'PY'
-from app.tools.route_planner_tool import plan_round_trip_routes
-
-result = plan_round_trip_routes.invoke({
-    "latitude": 30.2467,
-    "longitude": 120.1485,
-    "place_name": "杭州西湖",
-    "user_level": "新手",
-    "max_duration_hours": 3,
-    "preference": "湖边 新手",
-    "profile": "foot-walking",
-    "route_count": 3,
-})
-
-for trail in result.get("trails", []):
-    print(trail["name"], trail["geometry_points"], trail["geometry"][:2])
-PY
+```text
+http://127.0.0.1:8501
 ```
 
-如果 `geometry_points` 为 0，说明路线规划接口没有返回可绘制轨迹。
+注意：如果当前仓库尚未包含 Dockerfile 和 docker-compose.yml，请先按后续工程化计划补齐后再使用 Docker 启动。
 
-### 14.4 OpenRouteService 请求失败
+---
 
-可能原因：
+## 16. 缓存说明
 
-- API Key 错误
-- 免费额度耗尽
-- 网络无法访问 ORS
-- 起点附近路网不足
-- `foot-hiking` profile 在城市区域不稳定
+项目使用 SQLite 缓存减少重复请求外部 API 和 RAG 检索开销。
 
-可以先使用 `foot-walking` profile。
+缓存文件默认位于：
 
-### 14.5 不要提交敏感文件
+```text
+storage/trailmind_cache.sqlite3
+```
 
-建议新增 `.gitignore`：
+建议不要提交：
 
-```gitignore
+```text
+storage/*.sqlite3
+storage/chroma_safety/
+```
+
+---
+
+## 17. 安全与 GitHub 提交检查
+
+不要提交：
+
+```text
 .env
 .venv/
+storage/chroma_safety/
+storage/*.sqlite3
 __pycache__/
 *.pyc
 .DS_Store
 .streamlit/secrets.toml
+真实 API Key
+大视频文件
+模型缓存
 ```
 
----
-
-## 15. 当前局限
-
-- OpenRouteService 生成的是路网规划路线，不是户外平台人工精选路线。
-- 当前安全知识检索是规则式检索，还不是 Chroma / FAISS 向量 RAG。
-- 暂未接入真实海拔爬升 API，`elevation_gain_m` 暂时使用保守估计。
-- 暂未实现 FastAPI 后端接口。
-- 暂未加入 SQLite / Redis 缓存。
-- 暂未加入 pytest 自动化测试。
-- 暂未支持 GPX / KML 上传和导出。
-
----
-
-## 16. 后续规划
-
-### 阶段 4：RAG 安全知识库
-
-- 整理徒步安全 Markdown 文档
-- 使用 Chroma / FAISS 建立向量索引
-- 根据风险类型检索相关安全知识
-- 最终回答中引用安全知识摘要
-
-### 阶段 5：工程化与部署
-
-- 使用 FastAPI 封装 `/api/plan`
-- Streamlit 调用后端 API
-- SQLite 缓存天气和路线结果
-- 增加 pytest 测试
-- 增加 Dockerfile 和 docker-compose.yml
-- 增加 Demo 截图和 sample outputs
-
-### 加分扩展
-
-- GPX / KML 上传和解析
-- GPX 导出
-- OpenRouteService Elevation 或其他海拔服务
-- MCP Server 封装
-- 用户体能画像
-- 历史规划记录
-
----
-
-## 17. 简历描述参考
-
-**TrailMind：基于 LangGraph 的户外徒步规划与风险评估 Agent**
-
-基于 LangGraph 构建户外徒步规划 Agent，集成 LLM、地点解析、OpenRouteService 路线规划、Open-Meteo 天气查询、规则风险评估和 Streamlit 地图可视化，实现自然语言需求解析、候选路线生成、天气分析、风险评分、装备推荐和 Plan B 输出。系统支持工具调用轨迹展示、候选路线地图切换和完整工作流状态观测，提升了 Agent 系统的可控性、可解释性和工程展示价值。
-
-简历 bullet：
+建议提交：
 
 ```text
-- 设计并实现基于 LangGraph 的多节点 Agent 工作流，将徒步规划拆解为意图解析、地点定位、路线生成、天气查询、风险评估、Plan B 和最终计划生成等节点，提升工具调用流程的可控性和可解释性。
-- 封装 OpenRouteService round-trip 路线规划工具，根据用户时长和体能水平生成多条候选徒步环线，并解析距离、耗时和 GeoJSON 轨迹用于地图展示。
-- 集成 Open-Meteo 天气预报和规则化风险评分模型，综合降水概率、风速、温度、紫外线、路线距离和用户水平输出风险等级、风险原因和装备建议。
-- 使用 Streamlit + Folium 搭建可视化前端，支持候选路线地图展示、地图内轨迹切换、风险卡片、Plan B、安全知识和 LangGraph 工作流轨迹展示。
+.env.example
+README.md
+requirements.txt
+pytest.ini
+run_cli.py
+app/
+frontend/
+tests/
+app/rag/docs/
+.streamlit/config.toml
+```
+
+提交前检查：
+
+```bash
+git status
+
+git ls-files | grep -E "\.env|\.venv|chroma_safety|sqlite|db|__pycache__|pyc"
+```
+
+如果敏感文件已经被跟踪：
+
+```bash
+git rm --cached .env
+git rm -r --cached .venv
+git rm -r --cached storage/chroma_safety
+git rm --cached storage/*.sqlite3
 ```
 
 ---
 
-## 18. 许可证
+## 18. 常见问题
+
+### 18.1 FastAPI 后端连接失败
+
+现象：Streamlit 提示无法连接后端。
+
+处理：
+
+```bash
+python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+确认：
+
+```bash
+curl http://127.0.0.1:8000/api/health
+```
+
+### 18.2 OpenRouteService 请求失败
+
+可能原因：
+
+- `ORS_API_KEY` 未配置
+- API Key 错误
+- 免费额度耗尽
+- 当前地点附近路网不足
+- 网络无法访问 ORS
+
+处理：
+
+- 检查 `.env`
+- 更换地点测试
+- 降低路线距离或时长要求
+- 使用固定验收用例排查
+
+### 18.3 RAG 索引不存在
+
+现象：安全知识检索失败或回退到规则建议。
+
+处理：
+
+```bash
+python -m app.rag.build_index
+```
+
+### 18.4 sentence-transformers 模型下载失败
+
+可能原因：
+
+- 本地网络无法访问 Hugging Face
+- 模型缓存不存在
+- 企业内网限制外部下载
+
+处理：
+
+- 使用可访问网络预下载模型
+- 配置 Hugging Face 镜像
+- 将模型缓存保存在本地环境
+- 暂时依赖规则兜底建议
+
+### 18.5 上传 GPX/KML 失败
+
+可能原因：
+
+- 文件格式不合法
+- 文件中没有有效轨迹点
+- KML 坐标格式异常
+- GPX 只包含 waypoint，没有 track segment
+
+处理：
+
+- 使用标准户外 App 导出的 GPX
+- 检查文件中是否存在 `<trkpt>` 或有效 KML coordinates
+- 尝试换用更短轨迹文件测试
+
+---
+
+## 19. 当前局限
+
+- OpenRouteService 生成的是基于路网的规划路线，不是 AllTrails、Wikiloc、两步路等平台上的人工精选轨迹。
+- 当前风险模型主要基于规则评分，适合解释和展示，但不是专业户外安全决策系统。
+- 海拔 / 累计爬升建模仍需加强；如果轨迹或路线缺少 elevation 数据，系统应明确说明。
+- 第三方 API 调用受网络、额度、Key 权限和服务稳定性影响。
+- Docker Compose 与 GitHub Actions 尚需补齐。
+- Demo 截图、示例输出和部署说明仍需完善。
+
+---
+
+## 20. 后续规划
+
+### P0：工程化收口
+
+- [ ] README 与代码状态保持一致
+- [ ] 端到端验收 CLI / FastAPI / Streamlit / RAG / GPX / pytest
+- [ ] 清理敏感文件和运行时缓存
+- [ ] 修复 response schema 中的可变默认值
+
+### P1：可复现部署与自动测试
+
+- [ ] 补充 Dockerfile
+- [ ] 补充 docker-compose.yml
+- [ ] 补充 .dockerignore
+- [ ] 增加 GitHub Actions
+- [ ] 将外部 API 测试 mock 化
+
+### P2：展示优化
+
+- [ ] 增加 Demo 截图
+- [ ] 增加 examples/sample_requests.json
+- [ ] 增加 examples/sample_outputs.md
+- [ ] 增加 examples/sample_uploaded_track.gpx
+- [ ] 优化 Streamlit 页面布局和地图交互
+
+### P3：高级扩展
+
+- [ ] 更真实的海拔 / 爬升计算
+- [ ] 多路线 provider：ORS / OSMnx / GPX
+- [ ] 用户体能画像
+- [ ] 历史规划记录
+- [ ] LangGraph streaming 节点进度
+- [ ] MCP Server 封装
+
+---
+
+## 21. 简历描述参考
+
+### 一句话版本
+
+TrailMind 是一个基于 LangGraph 的户外徒步规划与风险评估 Agent，集成路线规划、天气查询、RAG 安全知识库、风险评分、Plan B 生成和地图可视化，并通过 FastAPI + Streamlit 完成工程化封装。
+
+### 项目描述版本
+
+基于 LangGraph 构建多节点户外规划 Agent，将用户自然语言需求拆解为地点解析、路线规划、天气查询、风险评估、RAG 安全知识检索和 Plan B 生成等可控节点。系统集成 OpenRouteService 生成候选徒步路线，调用 Open-Meteo 查询天气，并基于降水、风速、温度、紫外线、路线距离、用户经验和轨迹信息构建可解释风险评分模型。引入 Chroma 安全知识库，针对高温、雷暴、长距离和新手风险检索安全建议，并在最终规划中展示知识来源。前端使用 Streamlit + Folium 实现多候选路线地图可视化、GPX/KML 上传分析、GPX 下载、工具调用轨迹展示和风险报告展示；后端通过 FastAPI 封装 Agent 能力，并结合 SQLite 缓存和 pytest 测试提升项目工程化程度。
+
+### 简历 bullet
+
+- 设计并实现基于 LangGraph 的多节点 Agent 工作流，将徒步规划拆解为意图解析、地点定位、路线生成、天气查询、风险评估、Plan B 和最终计划生成等节点，提高工具调用流程的可控性和可解释性。
+- 封装 OpenRouteService 路线规划工具，根据用户时长和体能水平生成候选徒步路线，并解析距离、耗时和 GeoJSON 轨迹用于地图展示。
+- 集成 Open-Meteo 天气预报和规则化风险评分模型，综合降水概率、风速、温度、紫外线、路线距离和用户水平输出风险等级、风险原因和装备建议。
+- 引入 Chroma + Markdown 安全知识库，根据风险类型检索安全建议，并在最终规划中展示知识来源。
+- 使用 FastAPI 封装 Agent 服务，使用 Streamlit + Folium 搭建可视化前端，支持 GPX/KML 上传轨迹分析、GPX 下载、候选路线地图展示和工具调用轨迹观测。
+
+---
+
+## 22. 许可证与免责声明
 
 当前项目用于学习、求职展示和技术验证。第三方 API 数据使用需遵守对应平台的服务条款。
+
+TrailMind 输出的风险评估和建议仅供参考，不能替代专业户外领队、安全机构、景区公告或气象预警。实际出行前请确认当地天气、交通、景区开放情况和个人身体状况。
