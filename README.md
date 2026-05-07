@@ -55,12 +55,12 @@ TrailMind = 自然语言徒步需求
 
 ### 当前仍需完善
 
-- [ ] Dockerfile / docker-compose.yml 一键启动
+- [x] Dockerfile / docker-compose.yml 一键启动
 - [ ] GitHub Actions 自动测试
 - [ ] Demo 截图与示例输出
 - [ ] 更真实的海拔 / 爬升风险建模
 - [ ] 第三方 API mock 测试
-- [ ] 更完整的部署说明
+- [x] Docker Compose 本地部署说明
 - [ ] 前端展示进一步产品化
 
 ---
@@ -498,36 +498,316 @@ integration tests:
 
 ---
 
-## 15. Docker 运行说明
+## 15. Docker Compose 一键启动
 
-当前阶段建议补充以下文件：
+项目已经支持通过 Docker Compose 一键启动完整服务，包括：
 
 ```text
-Dockerfile
-docker-compose.yml
-.dockerignore
+api       -> FastAPI 后端，宿主机端口 8000
+frontend  -> Streamlit 前端，宿主机端口 8501
 ```
 
-目标运行方式：
+Docker Compose 适合用于项目演示、部署验证和简历项目交付。相比手动启动，它可以避免重复创建虚拟环境、分别启动后端和前端、手动处理环境依赖等问题。
+
+### 15.1 前置条件
+
+确认 Docker 和 Docker Compose 可用：
 
 ```bash
-docker compose up --build
+docker --version
+docker compose version
 ```
 
-目标服务：
+如果执行 Docker 命令时出现：
 
 ```text
-api       -> FastAPI 后端，端口 8000
-frontend  -> Streamlit 前端，端口 8501
+permission denied while trying to connect to the Docker daemon socket
 ```
 
-计划中的访问地址：
+说明当前用户没有 Docker 权限。可以临时在命令前加 `sudo`，例如：
+
+```bash
+sudo docker compose ps
+```
+
+如果希望以后不使用 `sudo`，可以将当前用户加入 `docker` 用户组：
+
+```bash
+sudo usermod -aG docker $USER
+```
+
+然后退出当前终端并重新登录，再验证：
+
+```bash
+docker ps
+```
+
+### 15.2 准备环境变量
+
+首次运行前复制环境变量模板：
+
+```bash
+cp .env.example .env
+```
+
+然后编辑 `.env`：
+
+```bash
+vim .env
+```
+
+至少需要配置：
+
+```env
+API_KEY=your_llm_api_key
+BASE_URL=your_llm_base_url
+MODEL=your_model_name
+ORS_API_KEY=your_openrouteservice_api_key
+RAG_EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+```
+
+注意：`.env` 包含真实 API Key，不要提交到 GitHub。
+
+### 15.3 一键启动
+
+进入项目根目录：
+
+```bash
+cd ~/trailmind-agent
+```
+
+首次启动或代码更新后，推荐使用：
+
+```bash
+sudo docker compose up --build -d
+```
+
+如果当前用户已经有 Docker 权限，也可以不加 `sudo`：
+
+```bash
+docker compose up --build -d
+```
+
+首次启动可能较慢，因为需要构建镜像、安装 Python 依赖，并可能下载 embedding 模型。
+
+### 15.4 查看服务状态
+
+```bash
+sudo docker compose ps
+```
+
+正常情况下应看到两个服务：
+
+```text
+trailmind-api
+trailmind-frontend
+```
+
+其中：
+
+```text
+trailmind-api        -> FastAPI 后端
+trailmind-frontend   -> Streamlit 前端
+```
+
+### 15.5 访问服务
+
+FastAPI 后端健康检查：
+
+```bash
+curl http://127.0.0.1:8000/api/health
+```
+
+Streamlit 前端页面：
 
 ```text
 http://127.0.0.1:8501
 ```
 
-注意：如果当前仓库尚未包含 Dockerfile 和 docker-compose.yml，请先按后续工程化计划补齐后再使用 Docker 启动。
+如果项目运行在远程服务器上，需要使用服务器 IP 访问，例如：
+
+```text
+http://服务器IP:8501
+```
+
+或者使用 SSH 端口转发：
+
+```bash
+ssh -L 8501:127.0.0.1:8501 用户名@服务器IP
+```
+
+然后在本地浏览器打开：
+
+```text
+http://127.0.0.1:8501
+```
+
+### 15.6 测试规划接口
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/plan \
+  -H "Content-Type: application/json" \
+  -d '{"query":"我周末想在武汉东湖附近徒步，新手，4小时以内，帮我判断是否合适。"}'
+```
+
+如果 `.env` 中的模型配置和 `ORS_API_KEY` 正确，该接口会返回结构化规划结果。
+
+### 15.7 查看日志
+
+查看所有服务日志：
+
+```bash
+sudo docker compose logs -f
+```
+
+只查看后端日志：
+
+```bash
+sudo docker compose logs -f api
+```
+
+只查看前端日志：
+
+```bash
+sudo docker compose logs -f frontend
+```
+
+查看最近 100 行后端日志：
+
+```bash
+sudo docker compose logs --tail=100 api
+```
+
+### 15.8 停止和重启
+
+停止并删除当前 Compose 容器：
+
+```bash
+sudo docker compose down
+```
+
+后台重新启动：
+
+```bash
+sudo docker compose up -d
+```
+
+重新构建并启动：
+
+```bash
+sudo docker compose up --build -d
+```
+
+完整重启流程：
+
+```bash
+sudo docker compose down
+sudo docker compose up --build -d
+sudo docker compose ps
+```
+
+### 15.9 更新代码后的操作
+
+如果修改了 Python 代码、新增了代码文件、修改了 `requirements.txt`、`Dockerfile` 或 `docker-compose.yml`，推荐重新构建：
+
+```bash
+sudo docker compose down
+sudo docker compose up --build -d
+```
+
+如果只是修改 `.env`，通常不需要重新构建，只需要重启容器：
+
+```bash
+sudo docker compose down
+sudo docker compose up -d
+```
+
+如果新增依赖后怀疑缓存导致镜像没有更新，可以无缓存构建：
+
+```bash
+sudo docker compose down
+sudo docker compose build --no-cache
+sudo docker compose up -d
+```
+
+### 15.10 手动重建 RAG 索引
+
+如果需要单独重建安全知识库索引：
+
+```bash
+sudo docker compose run --rm api python -m app.rag.build_index
+```
+
+索引会写入：
+
+```text
+storage/chroma_safety/
+```
+
+该目录属于运行时生成物，不建议提交到 GitHub。
+
+### 15.11 常用 Docker Compose 命令汇总
+
+| 操作 | 命令 |
+|---|---|
+| 后台启动 | `sudo docker compose up -d` |
+| 重新构建并后台启动 | `sudo docker compose up --build -d` |
+| 前台启动并查看日志 | `sudo docker compose up --build` |
+| 查看容器状态 | `sudo docker compose ps` |
+| 查看全部日志 | `sudo docker compose logs -f` |
+| 查看后端日志 | `sudo docker compose logs -f api` |
+| 查看前端日志 | `sudo docker compose logs -f frontend` |
+| 停止并删除容器 | `sudo docker compose down` |
+| 重启服务 | `sudo docker compose restart` |
+| 只重启后端 | `sudo docker compose restart api` |
+| 只重启前端 | `sudo docker compose restart frontend` |
+| 进入后端容器 | `sudo docker compose exec api sh` |
+| 运行测试 | `sudo docker compose run --rm api pytest -q` |
+| 重建 RAG 索引 | `sudo docker compose run --rm api python -m app.rag.build_index` |
+
+### 15.12 常见 Docker 问题
+
+#### 端口被占用
+
+如果启动时报：
+
+```text
+port is already allocated
+```
+
+检查端口：
+
+```bash
+sudo lsof -i:8000
+sudo lsof -i:8501
+```
+
+可以先关闭旧容器：
+
+```bash
+sudo docker compose down
+```
+
+#### 前端访问不到后端
+
+Docker Compose 内部前端访问后端时，不能使用：
+
+```text
+http://127.0.0.1:8000
+```
+
+因为在前端容器内部，`127.0.0.1` 指向的是前端容器自己。
+
+Compose 中应使用服务名访问后端：
+
+```text
+TRAILMIND_API_BASE_URL=http://api:8000
+```
+
+#### 首次启动较慢
+
+首次启动可能会安装依赖、构建 RAG 索引或下载 embedding 模型。后续启动会复用 Docker 缓存和 HuggingFace 模型缓存。
+
 
 ---
 
@@ -685,7 +965,7 @@ python -m app.rag.build_index
 - 当前风险模型主要基于规则评分，适合解释和展示，但不是专业户外安全决策系统。
 - 海拔 / 累计爬升建模仍需加强；如果轨迹或路线缺少 elevation 数据，系统应明确说明。
 - 第三方 API 调用受网络、额度、Key 权限和服务稳定性影响。
-- Docker Compose 与 GitHub Actions 尚需补齐。
+- GitHub Actions 尚需补齐；Docker Compose 已支持本地一键启动。
 - Demo 截图、示例输出和部署说明仍需完善。
 
 ---
@@ -701,9 +981,9 @@ python -m app.rag.build_index
 
 ### P1：可复现部署与自动测试
 
-- [ ] 补充 Dockerfile
-- [ ] 补充 docker-compose.yml
-- [ ] 补充 .dockerignore
+- [x] 补充 Dockerfile
+- [x] 补充 docker-compose.yml
+- [x] 补充 .dockerignore
 - [ ] 增加 GitHub Actions
 - [ ] 将外部 API 测试 mock 化
 
