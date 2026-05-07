@@ -1,0 +1,42 @@
+# Git
+.git
+.gitignore
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Runtime data
+storage/
+outputs/
+*.sqlite3
+*.db
+
+# OS / editor files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Large or temporary files
+*.mp4
+*.mov
+*.avi
+*.zip
+*.tar
+*.tar.gz
