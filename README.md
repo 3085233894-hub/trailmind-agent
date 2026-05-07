@@ -115,28 +115,46 @@ TrailMind = 自然语言徒步需求
 ## 5. 系统架构
 
 ```mermaid
-flowchart TD
-    U[User] --> FE[Streamlit Frontend]
-    FE --> API[FastAPI Backend]
-    API --> G[LangGraph Agent]
+flowchart LR
+    U["User"] --> FE["Streamlit Frontend"]
 
-    G --> GEO[Geocode Tool]
-    G --> ROUTE[OpenRouteService Route Planner]
-    G --> WEATHER[Open-Meteo Weather Tool]
-    G --> RISK[Risk Scoring Tool]
-    G --> RAG[Chroma Safety RAG]
-    G --> PLANB[Plan B Generator]
+    FE -->|"/api/plan"| API["FastAPI Backend"]
+    FE -->|"/api/track/analyze"| API
 
-    GEO --> CACHE[SQLite Cache]
-    ROUTE --> CACHE
-    WEATHER --> CACHE
-    RAG --> CACHE
+    API --> AGENT["LangGraph Agent"]
+    API --> TRACK["GPX/KML Track Analyzer"]
 
-    API --> TRACK[GPX/KML Track Analyzer]
+    AGENT --> GEO["Geocode Tool"]
+    AGENT --> ROUTE["Route Planner"]
+    AGENT --> WEATHER["Weather Tool"]
+    AGENT --> RISK["Risk Scoring"]
+    AGENT --> RAG["Safety RAG"]
+    AGENT --> PLANB["Plan B Generator"]
+
     TRACK --> RISK
 
-    G --> API
-    API --> FE
+    GEO --> NOM["Nominatim"]
+    ROUTE --> ORS["OpenRouteService"]
+    WEATHER --> OM["Open-Meteo"]
+    RAG --> CHROMA["Chroma Vector Store"]
+
+    GEO -.-> CACHE[("SQLite Cache")]
+    ROUTE -.-> CACHE
+    WEATHER -.-> CACHE
+
+    classDef user fill:#E8F3FF,stroke:#3B82F6,color:#111827;
+    classDef frontend fill:#ECFDF5,stroke:#10B981,color:#111827;
+    classDef backend fill:#F5F3FF,stroke:#8B5CF6,color:#111827;
+    classDef tool fill:#FFF7ED,stroke:#F97316,color:#111827;
+    classDef external fill:#F9FAFB,stroke:#6B7280,color:#111827;
+    classDef storage fill:#FEF2F2,stroke:#EF4444,color:#111827;
+
+    class U user;
+    class FE frontend;
+    class API,AGENT,TRACK backend;
+    class GEO,ROUTE,WEATHER,RISK,RAG,PLANB tool;
+    class NOM,ORS,OM external;
+    class CHROMA,CACHE storage;
 ```
 
 ---
@@ -144,19 +162,42 @@ flowchart TD
 ## 6. LangGraph 工作流
 
 ```mermaid
-flowchart TD
-    A[User Query] --> B[parse_user_intent]
-    B --> C[geocode_location]
-    C --> D[plan_route]
-    D --> E[fetch_weather]
-    E --> F[assess_risk]
-    F --> G{High Risk?}
-    G -- Yes --> H[recommend_plan_b]
-    G -- No --> I[retrieve_safety_knowledge]
-    H --> I
-    I --> J[generate_final_plan]
-    J --> K[validate_output]
-    K --> L[Final Answer]
+flowchart LR
+    START(["User Query"])
+    PARSE["parse_user_intent"]
+    GEO["geocode_location"]
+    ROUTE["plan_round_trip_routes"]
+    WEATHER["fetch_weather"]
+    RISK["assess_risk"]
+    CHECK{"High Risk?"}
+    PLANB["recommend_plan_b"]
+    RAG["retrieve_safety_knowledge"]
+    FINAL["generate_final_plan"]
+    END(["Final Answer"])
+
+    START --> PARSE
+    PARSE --> GEO
+    GEO --> ROUTE
+    ROUTE --> WEATHER
+    WEATHER --> RISK
+    RISK --> CHECK
+
+    CHECK -- "Yes" --> PLANB
+    CHECK -- "No" --> RAG
+    PLANB --> RAG
+
+    RAG --> FINAL
+    FINAL --> END
+
+    classDef input fill:#E8F3FF,stroke:#3B82F6,color:#111827;
+    classDef node fill:#F5F3FF,stroke:#8B5CF6,color:#111827;
+    classDef decision fill:#FFF7ED,stroke:#F97316,color:#111827;
+    classDef output fill:#ECFDF5,stroke:#10B981,color:#111827;
+
+    class START input;
+    class PARSE,GEO,ROUTE,WEATHER,RISK,PLANB,RAG,FINAL node;
+    class CHECK decision;
+    class END output;
 ```
 
 节点说明：
