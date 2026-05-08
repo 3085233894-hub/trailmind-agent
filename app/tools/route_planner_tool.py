@@ -9,6 +9,8 @@ from langchain_core.tools import tool
 from app.config import ORS_API_KEY
 from app.services.cache import get_cache, make_cache_key, normalize_float, set_cache
 
+from .gpx_tool import estimate_duration_hours as gpx_estimate_duration_hours
+
 
 ORS_DIRECTIONS_ENDPOINT = "https://api.openrouteservice.org/v2/directions/{profile}/geojson"
 
@@ -269,6 +271,38 @@ def _extract_summary_and_geometry(ors_data: dict) -> tuple[float | None, float |
     return distance_km, duration_hours, geometry
 
 
+def _recalculate_duration_with_factors(
+    duration_hours: float | None,
+    distance_km: float | None,
+    user_level: str,
+    weather: dict | None = None,
+) -> float | None:
+    """
+    使用改进的估算方法重新计算时长。
+
+    考虑用户水平、天气因素等。
+    如果原始 ORS 时长存在，返回两者中较长的一个（保守估算）。
+    """
+    if distance_km is None:
+        return duration_hours
+
+    improved_duration = gpx_estimate_duration_hours(
+        distance_km=distance_km,
+        user_level=user_level,
+        elevation_gain_m=0,
+        weather=weather,
+    )
+
+    if improved_duration is None:
+        return duration_hours
+
+    # 如果原始 ORS 时长存在，取较长的一个（保守估算）
+    if duration_hours is not None:
+        return max(duration_hours, improved_duration)
+
+    return improved_duration
+
+
 def _parse_ors_geojson_route(
     ors_data: dict,
     place_name: str,
@@ -277,15 +311,25 @@ def _parse_ors_geojson_route(
     target_distance_km: float,
     max_duration_hours: float,
     profile: str,
+    user_level: str = "新手",
+    weather: dict | None = None,
 ) -> dict | None:
     distance_km, duration_hours, geometry = _extract_summary_and_geometry(ors_data)
 
     if not geometry:
         return None
 
+    # 使用考虑天气和用户水平的改进估算
+    estimated_duration_hours = _recalculate_duration_with_factors(
+        duration_hours=duration_hours,
+        distance_km=distance_km,
+        user_level=user_level,
+        weather=weather,
+    )
+
     route_cost = _score_route(
         distance_km=distance_km,
-        duration_hours=duration_hours,
+        duration_hours=estimated_duration_hours,
         target_distance_km=target_distance_km,
         max_duration_hours=max_duration_hours,
     )
@@ -299,7 +343,7 @@ def _parse_ors_geojson_route(
         "profile": profile,
         "seed": seed,
         "distance_km": distance_km,
-        "estimated_duration_hours": duration_hours,
+        "estimated_duration_hours": estimated_duration_hours,
         "difficulty": _difficulty_from_distance(distance_km),
         "target_distance_km": round(target_distance_km, 2),
         "route_cost": route_cost,
@@ -325,14 +369,24 @@ def _parse_ors_point_to_point_route(
     waypoint_names: list[str],
     max_duration_hours: float,
     profile: str,
+    user_level: str = "新手",
+    weather: dict | None = None,
 ) -> dict | None:
     distance_km, duration_hours, geometry = _extract_summary_and_geometry(ors_data)
 
     if not geometry:
         return None
 
-    route_cost = _point_to_point_cost(
+    # 使用考虑天气和用户水平的改进估算
+    estimated_duration_hours = _recalculate_duration_with_factors(
         duration_hours=duration_hours,
+        distance_km=distance_km,
+        user_level=user_level,
+        weather=weather,
+    )
+
+    route_cost = _point_to_point_cost(
+        duration_hours=estimated_duration_hours,
         max_duration_hours=max_duration_hours,
     )
 
@@ -354,7 +408,7 @@ def _parse_ors_point_to_point_route(
         "end_name": end_name,
         "waypoint_names": waypoint_names,
         "distance_km": distance_km,
-        "estimated_duration_hours": duration_hours,
+        "estimated_duration_hours": estimated_duration_hours,
         "difficulty": _difficulty_from_distance(distance_km),
         "route_cost": route_cost,
         "recommend_score": recommend_score,
@@ -465,6 +519,8 @@ def plan_round_trip_routes(
             target_distance_km=target_distance_km,
             max_duration_hours=max_duration_hours,
             profile=profile,
+            user_level=user_level,
+            weather=None,
         )
 
         if route:
@@ -674,6 +730,8 @@ def plan_point_to_point_route(
         waypoint_names=waypoint_names,
         max_duration_hours=max_duration_hours,
         profile=profile,
+        user_level=user_level,
+        weather=None,
     )
 
     if not trail:

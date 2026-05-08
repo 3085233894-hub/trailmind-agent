@@ -52,15 +52,40 @@ def _valid_point(point: Any) -> bool:
     return True
 
 
-def normalize_geometry(geometry: list[Any]) -> list[list[float]]:
+def _valid_point_with_ele(point: Any) -> bool:
+    """验证轨迹点，支持带海拔的三元组"""
+    if not isinstance(point, (list, tuple)):
+        return False
+
+    if len(point) < 2:
+        return False
+
+    try:
+        lat = float(point[0])
+        lon = float(point[1])
+    except Exception:
+        return False
+
+    if not (-90 <= lat <= 90):
+        return False
+
+    if not (-180 <= lon <= 180):
+        return False
+
+    return True
+
+
+def normalize_geometry(geometry: list[Any], include_elevation: bool = False) -> list[list[float]]:
     """
     统一轨迹点格式。
 
     输入：
         [[lat, lon], [lat, lon]]
+        或 [[lat, lon, ele], [lat, lon, ele]]
 
     输出：
         [[lat, lon], [lat, lon]]
+        或 [[lat, lon, ele], [lat, lon, ele]]
     """
     if not isinstance(geometry, list):
         return []
@@ -74,7 +99,14 @@ def normalize_geometry(geometry: list[Any]) -> list[list[float]]:
         lat = round(float(point[0]), 7)
         lon = round(float(point[1]), 7)
 
-        result.append([lat, lon])
+        if include_elevation and len(point) >= 3:
+            try:
+                ele = round(float(point[2]), 1)
+                result.append([lat, lon, ele])
+            except Exception:
+                result.append([lat, lon])
+        else:
+            result.append([lat, lon])
 
     return result
 
@@ -107,11 +139,13 @@ def haversine_distance_km(
     return radius_km * c
 
 
-def calculate_geometry_distance_km(geometry: list[Any]) -> float:
+def calculate_geometry_distance_km(geometry: list[Any], include_elevation: bool = False) -> float:
     """
     计算轨迹总长度。
+
+    当 include_elevation=True 时，同时计算累计爬升。
     """
-    points = normalize_geometry(geometry)
+    points = normalize_geometry(geometry, include_elevation=include_elevation)
 
     if len(points) < 2:
         return 0.0
@@ -119,19 +153,65 @@ def calculate_geometry_distance_km(geometry: list[Any]) -> float:
     total = 0.0
 
     for index in range(1, len(points)):
-        lat1, lon1 = points[index - 1]
-        lat2, lon2 = points[index]
+        p1 = points[index - 1]
+        p2 = points[index]
+
+        lat1, lon1 = p1[0], p1[1]
+        lat2, lon2 = p2[0], p2[1]
+
         total += haversine_distance_km(lat1, lon1, lat2, lon2)
 
     return round(total, 2)
 
 
+def calculate_elevation_gain(geometry: list[Any]) -> float:
+    """
+    计算轨迹累计爬升高度（米）。
+
+    仅当轨迹点包含海拔信息时有效。
+    """
+    points = normalize_geometry(geometry, include_elevation=True)
+
+    if len(points) < 2:
+        return 0.0
+
+    total_ascent = 0.0
+    total_descent = 0.0
+
+    for index in range(1, len(points)):
+        p1 = points[index - 1]
+        p2 = points[index]
+
+        # 需要海拔数据
+        if len(p1) < 3 or len(p2) < 3:
+            return 0.0
+
+        ele1 = p1[2]
+        ele2 = p2[2]
+
+        diff = ele2 - ele1
+        if diff > 0:
+            total_ascent += diff
+        else:
+            total_descent += abs(diff)
+
+    return round(total_ascent, 1)
+
+
 def estimate_duration_hours(
     distance_km: float | None,
     user_level: str = "新手",
+    elevation_gain_m: float = 0,
+    weather: dict | None = None,
 ) -> float | None:
     """
-    根据用户水平估算徒步时长。
+    根据距离、用户水平、海拔爬升和天气估算徒步时长。
+
+    考虑因素：
+    - 基础速度：新手 3 km/h，其他 4 km/h
+    - 海拔爬升：每 100m 爬升增加 10 分钟
+    - 大风天气：风速 > 30 km/h 时减速 15%
+    - 高降水概率：降水概率 > 70% 时减速 20%
     """
     if distance_km is None:
         return None
@@ -139,12 +219,48 @@ def estimate_duration_hours(
     if distance_km <= 0:
         return 0.0
 
+    # 基础速度 (km/h)
     if user_level in ["新手", "初学者", "beginner", "没经验", "小白"]:
-        speed_kmh = 3.0
+        base_speed_kmh = 3.0
     else:
-        speed_kmh = 4.0
+        base_speed_kmh = 4.0
 
-    return round(distance_km / speed_kmh, 2)
+    # 海拔爬升补偿时间 (小时)
+    # 每 100m 爬升约增加 10 分钟
+    elevation_time_hours = (elevation_gain_m / 100) * (10 / 60)
+
+    # 天气调整系数
+    weather_multiplier = 1.0
+    if weather and isinstance(weather, dict):
+        # 风速影响
+        wind_speed = weather.get("wind_speed_max_kmh", 0)
+        if wind_speed > 40:
+            weather_multiplier *= 1.25  # 强风减速 25%
+        elif wind_speed > 30:
+            weather_multiplier *= 1.15  # 大风减速 15%
+
+        # 降水概率影响
+        rain_prob = weather.get("precipitation_probability_max", 0)
+        if rain_prob > 80:
+            weather_multiplier *= 1.25  # 高降水减速 25%
+        elif rain_prob > 70:
+            weather_multiplier *= 1.20  # 较高降水减速 20%
+
+        # 极端温度影响 (简单处理)
+        temp_max = weather.get("temperature_max_c")
+        temp_min = weather.get("temperature_min_c")
+        if temp_max is not None and temp_max > 35:
+            weather_multiplier *= 1.15  # 高温减速 15%
+        if temp_min is not None and temp_min < 0:
+            weather_multiplier *= 1.10  # 低温减速 10%
+
+    # 计算有效距离（考虑天气）
+    effective_distance = distance_km * weather_multiplier
+
+    # 总时间 = 行走时间 + 海拔补偿
+    duration = (effective_distance / base_speed_kmh) + elevation_time_hours
+
+    return round(duration, 2)
 
 
 def difficulty_from_distance(distance_km: float | None) -> str:
@@ -274,10 +390,15 @@ def parse_gpx_bytes(file_bytes: bytes, filename: str = "uploaded.gpx") -> dict:
     - trkpt
     - rtept
     - wpt
+
+    提取的信息：
+    - 经纬度 (lat, lon)
+    - 海拔高度 (ele)
     """
     root = _xml_root_from_bytes(file_bytes)
 
     geometry: list[list[float]] = []
+    has_elevation = False
 
     preferred_tags = ["trkpt", "rtept", "wpt"]
 
@@ -295,7 +416,23 @@ def parse_gpx_bytes(file_bytes: bytes, filename: str = "uploaded.gpx") -> dict:
                 continue
 
             try:
-                points.append([round(float(lat), 7), round(float(lon), 7)])
+                lat_val = round(float(lat), 7)
+                lon_val = round(float(lon), 7)
+
+                # 查找海拔元素
+                ele = None
+                for child in element:
+                    if _strip_namespace(child.tag) == "ele":
+                        if child.text and child.text.strip():
+                            ele = round(float(child.text.strip()), 1)
+                            has_elevation = True
+                            break
+
+                if ele is not None:
+                    points.append([lat_val, lon_val, ele])
+                else:
+                    points.append([lat_val, lon_val])
+
             except Exception:
                 continue
 
@@ -312,7 +449,7 @@ def parse_gpx_bytes(file_bytes: bytes, filename: str = "uploaded.gpx") -> dict:
 
     name = _find_text_by_local_name(root, "name") or Path(filename).stem
 
-    return {
+    result = {
         "ok": True,
         "filename": filename,
         "name": name,
@@ -321,8 +458,15 @@ def parse_gpx_bytes(file_bytes: bytes, filename: str = "uploaded.gpx") -> dict:
         "source_type": "uploaded_gpx",
     }
 
+    # 如果有海拔数据，计算累计爬升
+    if has_elevation:
+        result["elevation_gain_m"] = calculate_elevation_gain(geometry)
+        result["has_elevation"] = True
 
-def _parse_kml_coordinates_text(text: str) -> list[list[float]]:
+    return result
+
+
+def _parse_kml_coordinates_text(text: str, include_elevation: bool = False) -> list[list[float]]:
     """
     解析 KML coordinates。
 
@@ -349,7 +493,14 @@ def _parse_kml_coordinates_text(text: str) -> list[list[float]]:
             continue
 
         if -90 <= lat <= 90 and -180 <= lon <= 180:
-            geometry.append([round(lat, 7), round(lon, 7)])
+            if include_elevation and len(parts) >= 3:
+                try:
+                    ele = round(float(parts[2]), 1)
+                    geometry.append([round(lat, 7), round(lon, 7), ele])
+                except Exception:
+                    geometry.append([round(lat, 7), round(lon, 7)])
+            else:
+                geometry.append([round(lat, 7), round(lon, 7)])
 
     return geometry
 

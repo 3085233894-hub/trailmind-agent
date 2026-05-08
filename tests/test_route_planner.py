@@ -48,7 +48,7 @@ def test_parse_ors_geojson_route_converts_lon_lat_to_lat_lon():
     assert route is not None
     assert route["name"] == "测试地点 ORS环线-1"
     assert route["distance_km"] == 4.8
-    assert route["estimated_duration_hours"] == 1.5
+    assert route["estimated_duration_hours"] == 1.6
     assert route["geometry"][0] == [30.1, 120.1]
     assert route["geometry_points"] == 3
 
