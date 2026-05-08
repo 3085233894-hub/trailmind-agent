@@ -1,6 +1,6 @@
 langchain
 langchain-core
-langchain-anthropic
+langchain-openai
 langgraph
 python-dotenv
 requests

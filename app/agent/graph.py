@@ -4,7 +4,7 @@ import json
 import re
 from typing import Any, Literal
 
-from langchain_anthropic import ChatAnthropic
+from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
 
@@ -47,19 +47,19 @@ def build_llm():
     if not API_KEY:
         raise ValueError("API_KEY 未配置，请检查 .env 文件")
 
-    llm_kwargs = {
-        "model": MODEL,
-        "anthropic_api_key": API_KEY,
-        "max_tokens": 1800,
-        "temperature": 0.2,
-    }
-
     api_url = get_anthropic_api_url()
-
     if api_url:
-        llm_kwargs["anthropic_api_url"] = api_url
+        base_url = api_url
+    else:
+        base_url = "https://api.deepseek.com/v1"
 
-    return ChatAnthropic(**llm_kwargs)
+    return ChatOpenAI(
+        model=MODEL,
+        api_key=API_KEY,
+        base_url=base_url,
+        max_tokens=1800,
+        temperature=0.2,
+    )
 
 
 llm = build_llm()

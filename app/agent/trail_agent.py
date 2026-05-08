@@ -1,6 +1,6 @@
 import json
 
-from langchain_anthropic import ChatAnthropic
+from langchain_openai import ChatOpenAI
 from langchain.agents import create_agent
 
 from app.config import API_KEY, MODEL, get_anthropic_api_url
@@ -129,18 +129,19 @@ def build_agent():
     if not API_KEY:
         raise ValueError("API_KEY 未配置，请检查 .env 文件")
 
-    llm_kwargs = {
-        "model": MODEL,
-        "anthropic_api_key": API_KEY,
-        "max_tokens": 1800,
-        "temperature": 0.2,
-    }
-
     api_url = get_anthropic_api_url()
     if api_url:
-        llm_kwargs["anthropic_api_url"] = api_url
+        base_url = api_url
+    else:
+        base_url = "https://api.deepseek.com/v1"
 
-    llm = ChatAnthropic(**llm_kwargs)
+    llm = ChatOpenAI(
+        model=MODEL,
+        api_key=API_KEY,
+        base_url=base_url,
+        max_tokens=1800,
+        temperature=0.2,
+    )
 
     tools = [
         geocode_place,
