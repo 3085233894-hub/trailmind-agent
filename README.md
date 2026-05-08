@@ -58,7 +58,7 @@ TrailMind = 自然语言徒步需求
 - [x] Dockerfile / docker-compose.yml 一键启动
 - [ ] GitHub Actions 自动测试
 - [ ] Demo 截图与示例输出
-- [ ] 更真实的海拔 / 爬升风险建模
+- [x] 更真实的海拔 / 爬升风险建模（GPX 海拔解析 + 天气因素时长估算）
 - [ ] 第三方 API mock 测试
 - [x] Docker Compose 本地部署说明
 - [ ] 前端展示进一步产品化
